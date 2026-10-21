@@ -174,6 +174,7 @@ import { useFoliumHostActions } from './mods/runtime/hostActions';
 import { FoliumStageLayerSlot } from './mods/folium/registries/stageLayers';
 import { errorFields } from './utils/errorText';
 import { runsOnWindows } from './utils/platform';
+import ReturnHomeButton from './components/ReturnHomeButton';
 
 const LOCAL_MUSIC_UPDATED_EVENT = 'folia-local-music-updated';
 const DEV_DEBUG_SHORTCUT_LABEL = 'Alt+Shift+D';
@@ -2686,6 +2687,7 @@ export default function App() {
                 {renderAudioDeck('B', automix.registerDeckB)}
             </>}
         >
+            <ReturnHomeButton />
 
             {/* 首页层、Lattice 与两面墙共用的右下角工具按钮（WallToolsDock：交接时按钮节点不重建）。 */}
             <WallToolsDockHost host={wallToolsHost}>
