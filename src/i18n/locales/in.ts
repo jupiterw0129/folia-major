@@ -1,6 +1,7 @@
 
 
 export default {
+  "privateSource": {"title":"Sumber pribadi","active":"Sumber pribadi aktif","description":"Masukkan frasa sandi pribadi untuk mengaktifkan Ceru selama 8 jam. Berlaku untuk trek baru; cache audio tidak berubah.","connected":"Ceru menangani trek yang didukung. Platform lain tetap memakai sumber biasa. Nonaktifkan untuk memakai audio platform.","passphrase":"Frasa sandi pribadi","connect":"Otorisasi dan aktifkan","disconnect":"Nonaktifkan sumber pribadi","wait":"Harap tunggu…","error":"Otorisasi atau koneksi gagal. Periksa frasa sandi lalu coba lagi."},
   "libraryBravais": {
     "suiteName": "Dinding Bravais",
     "homeTitle": "Pustaka",

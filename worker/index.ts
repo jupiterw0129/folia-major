@@ -4,6 +4,7 @@ import { handleGenerateOpenAITheme } from "./generate-theme_openai.ts";
 import { handleLyricProxy } from "./lyric-proxy.ts";
 import { handleSegmentLyrics } from "./segment-lyrics.ts";
 import { QQ_API_PREFIX, type QqServerlessEnv, handleQq } from "./qq.ts";
+import { handleCeru, type CeruEnv } from './ceru.ts';
 
 // qq-music-api uses Buffer during requests; Workers do not expose it without nodejs_compat.
 // 这一行在模块作用域，所以它先于 fetch handler 与下面导出的 Durable Object 具现化执行 ——
@@ -28,11 +29,12 @@ type Env = {
   OPENAI_API_URL?: string;
   OPENAI_API_MODEL?: string;
   OPENAI_API_TEMPERATURE?: string;
-} & QqServerlessEnv;
+} & QqServerlessEnv & CeruEnv;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.startsWith('/api/ceru/')) return handleCeru(request, env);
 
     if (url.pathname === "/api/generate-theme") {
       return handleGenerateTheme(request, env);

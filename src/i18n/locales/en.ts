@@ -1,6 +1,7 @@
 
 
 export default {
+  "privateSource": {"title":"Private source","active":"Private source enabled","description":"Enter your personal passphrase to enable Ceru resolution for 8 hours. This applies to newly resolved tracks; cached audio is unchanged.","connected":"Ceru resolves supported tracks. Other platforms keep their usual source. Disable to use platform audio again.","passphrase":"Personal passphrase","connect":"Authorize and enable","disconnect":"Disable private source","wait":"Please wait…","error":"Authorization or connection failed. Check your passphrase and retry."},
   "libraryBravais": {
     "suiteName": "Bravais wall",
     "homeTitle": "Library",

@@ -1,4 +1,5 @@
 import type { SongResult, UnifiedSong } from '../../types';
+import { getCeruSession, setCeruSession, resolveCeruAudio } from './ceru/ceruClient';
 import type {
     AudioQualityPreference,
     LoginStep,
@@ -396,6 +397,8 @@ const withActiveProvider = async <T>(run: (provider: OnlineMusicProvider) => Pro
 };
 
 export const omni = {
+    getPrivateSourceSession: getCeruSession,
+    setPrivateSourceSession: setCeruSession,
     invalidateActiveRequests(): void {
         activeRequestGeneration += 1;
     },
@@ -813,6 +816,11 @@ export const omni = {
 
     async getAudioSource(song: SongResult, quality: AudioQualityPreference): Promise<OmniAudioSource | null> {
         const provider = providerForSong(song);
+        const ref = getPlaybackSourceRef(song);
+        if (ref.kind === 'online') {
+            const custom = await resolveCeruAudio(ref.providerId, String(ref.mediaId), quality);
+            if (custom) return custom;
+        }
         const level = audioQualityFor(provider.id, quality);
         let source: OmniAudioSource | null;
         try {

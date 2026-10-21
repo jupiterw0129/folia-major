@@ -1,6 +1,7 @@
 
 
 export default {
+  "privateSource": {"title":"个人音源","active":"个人音源已启用","description":"输入个人访问口令以启用 Ceru 解析。授权持续 8 小时，仅影响之后解析的歌曲；已缓存的音频保持原样。","connected":"Ceru 音源已启用。网易云、QQ 和酷狗使用此音源解析，其他平台保持原方式。关闭后使用平台音源。","passphrase":"个人访问口令","connect":"授权并启用","disconnect":"关闭个人音源","wait":"请稍候…","error":"授权失败或连接异常，请检查口令并重试。"},
   "libraryBravais": {
     "suiteName": "Bravais 墙面",
     "homeTitle": "书库",
