@@ -76,7 +76,8 @@
     "contributors:generate": "npx all-contributors-cli generate",
     "models:fetch": "node build/fetchModels.mjs",
     "steam-audio:fetch": "node build/fetchSteamAudio.mjs",
-    "manual:ai-probe": "node test/manual/ai_probe.mjs"
+    "manual:ai-probe": "node test/manual/ai_probe.mjs",
+    "deploy:cloudflare": "powershell -NoProfile -ExecutionPolicy Bypass -File ./deploy-cloudflare.ps1"
   },
   "build": {
     "appId": "top.izuna.foliamajor",
