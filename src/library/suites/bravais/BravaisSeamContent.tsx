@@ -1,11 +1,11 @@
 import React, { useCallback, useMemo } from 'react';
-import { ChevronLeft, FoldHorizontal, ListFilter, ListPlus, Maximize2, Play } from 'lucide-react';
+import { ChevronLeft, FoldHorizontal, ListFilter, ListPlus, Maximize2, Play, Shuffle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { BravaisLayer } from './bravaisLayer';
 import type { BravaisHomeShortcut } from './bravaisHomeModels';
 import type { BravaisSeamLevel } from './bravaisSeamLevel';
 import type { BravaisSeamContentVariant } from './bravaisSeamTarget';
-import { BravaisSeamCollectionMenu, BravaisSeamCollectionMeta, BravaisSeamStar, BravaisSeamStatusLine } from './BravaisSeamCollection';
+import { BravaisSeamCollectionMenu, BravaisSeamCollectionMeta, BravaisSeamMetaLine, BravaisSeamStatusLine } from './BravaisSeamCollection';
 import { BravaisSeamSpineTitle, BravaisSeamTitleArea } from './BravaisSeamTitle';
 import BravaisSeamFilterField from './BravaisSeamFilterField';
 import { openBravaisFilter } from './useBravaisSeamFilter';
@@ -20,13 +20,17 @@ import BravaisSeamCrumbs from './BravaisSeamCrumbs';
 import BravaisSeamPoster from './BravaisSeamPoster';
 import BravaisSeamAlbumPoster from './BravaisSeamAlbumPoster';
 import { BravaisSeamFlipText } from './BravaisSeamFlip';
+import { BravaisSeamFullRow, BravaisSeamSpineRow } from './BravaisSeamRow';
+import BravaisSeamHomeRow from './BravaisSeamHomeRow';
+import BravaisSeamPlayScope from './BravaisSeamPlayScope';
 
 // src/library/suites/bravais/BravaisSeamContent.tsx
 // 缝里的四套内容（设计稿 §5）：首页窄缝（竖排「书库」+ 竖排页签）、首页书脊、完整信息条（面包屑行、竖排标题、
 // 元数据、播放全部 / 加入队列）、书脊（返回、竖排标题、计数、播放、展开）。排版宽度由外层按「此刻渲染的这一套」定，
 // 这里只排内容。文案都来自层描述（已翻译）与 libraryBravais 的 key。界面文案：「收起」= 收成书脊，「折叠」= 折到侧边。
 // fb10：完整信息条的面包屑行只剩 ‹ 与面包屑（拿到整行宽度）；「收起」改成点标题区域（BravaisSeamTitle，书脊上点标题
-// 展开，两边一致），「折叠」挪进「⋯ 更多」的末尾；收藏星标在播放全部 / 加入队列那一行的末尾。
+// 展开，两边一致），「折叠」挪进「⋯ 更多」的末尾。方案 C（2026-11-13）：播放全部｜随机、加入队列一行，下面一排图标动作格
+// （收藏星标、列表、按优先级补上的集合动作、⋯，BravaisSeamCollectionMenu）；书脊的播放下面多一个随机播放。
 // B9：首页窄缝 / 书脊换成 BravaisSeamHome（页签、二级切换、工具按钮、管理隐藏、账户位），另有全局搜索框（search）；
 // 首页层的面板是目录树（BravaisDirectoryPanel），集合层的面板仍是歌曲列表。
 // 集合页的描述在标题下方（元数据行之后），与歌手页的「关于艺术家」共用 BravaisSeamAbout（同一套正文样式、
@@ -35,6 +39,8 @@ import { BravaisSeamFlipText } from './BravaisSeamFlip';
 // 当前页过滤（设计稿 §7.6）：完整信息条的面包屑行下面是缝自己的过滤输入位（BravaisSeamFilterField）；书脊放不下输入框，
 // 过滤中只留一个过滤图标（点它或在墙上打字，缝临时展开成完整信息条）。
 // 歌手页、专辑页的完整等级画成海报（BravaisSeamPoster / BravaisSeamAlbumPoster，相机把它带到视口最左边）；过滤、面板、表单时回到上面这几套。
+// 信息条横向（row）：首页窄缝 / 书脊与完整信息条 / 书脊换成横条的排法（BravaisSeamHomeRow、BravaisSeamRow），搜索框同一个
+// 组件、横条样式（bravaisSeamRow.css）；面板、表单、海报总是竖的（bravaisSeamTarget 的 resolveSeamAxis）。
 
 export type BravaisSeamActions = {
     setLevel: (level: BravaisSeamLevel) => void;
@@ -49,6 +55,8 @@ export type BravaisSeamActions = {
 
 type BravaisSeamContentProps = {
     variant: BravaisSeamContentVariant;
+    /** 这套内容画在横的缝里。 */
+    row?: boolean;
     layer: BravaisLayer | null;
     /** 导航栈深度：面包屑在首页与当前层之间折叠中间层。 */
     depth: number;
@@ -94,8 +102,9 @@ const FullSeam: React.FC<{ layer: BravaisLayer; depth: number; actions: BravaisS
                 onCollapse={collapse} />
             <div className="bravais-seam-rule" />
             {/* 歌手页的统计已是「关于艺术家」的附注：相同时元数据行不重复（过滤中是匹配数，照常显示）。 */}
+            {/* 集合能重新拉取时，这一行就是「重新拉取」按钮（不在「⋯ 更多」里）。 */}
             {!(seam.artist?.stats && seam.artist.stats === seam.meta) && (
-                <BravaisSeamFlipText as="div" flipKey={seam.meta} className="bravais-seam-meta">{seam.meta}</BravaisSeamFlipText>
+                <BravaisSeamMetaLine meta={seam.meta} reload={collection?.reload} className="bravais-seam-meta" />
             )}
             {seam.artist && <BravaisSeamArtist artist={seam.artist} />}
             {collection?.description && (
@@ -105,18 +114,12 @@ const FullSeam: React.FC<{ layer: BravaisLayer; depth: number; actions: BravaisS
             {seam.status && <BravaisSeamFlipText as="div" flipKey={seam.status} className="bravais-seam-status" data-bravais-seam-status>{seam.status}</BravaisSeamFlipText>}
             {collection?.status && <BravaisSeamStatusLine status={collection.status} />}
             <div className="bravais-seam-actions is-scope">
-                {seam.onPlayScope && (
-                    <button type="button" className="bravais-chrome-button is-primary" data-bravais-seam-action="play-scope" onClick={seam.onPlayScope}>
-                        <Play aria-hidden />{seam.scopeLabels?.play ?? t('libraryBravais.playAll')}
-                    </button>
-                )}
+                <BravaisSeamPlayScope seam={seam} buttonClassName="bravais-chrome-button" />
                 {seam.onEnqueueScope && (
                     <button type="button" className="bravais-chrome-button" data-bravais-seam-action="enqueue-scope" onClick={seam.onEnqueueScope}>
                         <ListPlus aria-hidden />{seam.scopeLabels?.enqueue ?? t('libraryBravais.enqueueAll')}
                     </button>
                 )}
-                {/* fb10：收藏星标是这一排动作的最后一个（图标按钮，靠右），不再在描述下面单独占一行。 */}
-                {collection?.subscribe && <BravaisSeamStar subscribe={collection.subscribe} />}
             </div>
             <BravaisSeamCollectionMenu collection={collection} onOpenList={actions.openList} fold={fold} />
         </div>
@@ -154,6 +157,13 @@ const SpineSeam: React.FC<{ layer: BravaisLayer; actions: BravaisSeamActions }> 
                     <Play aria-hidden />
                 </button>
             )}
+            {/* 随机播放只跟着播放出现（与 BravaisSeamPlayScope 的两半同一条规则）。 */}
+            {seam.onPlayScope && seam.onShuffleScope && (
+                <button type="button" className="bravais-seam-icon" data-bravais-seam-action="shuffle-scope" onClick={seam.onShuffleScope}
+                    aria-label={t('playlist.shufflePlay')} title={t('playlist.shufflePlay')}>
+                    <Shuffle aria-hidden />
+                </button>
+            )}
             <button type="button" className="bravais-seam-icon" data-bravais-seam-action="expand" onClick={() => actions.setLevel('full')}
                 aria-label={t('libraryBravais.seamExpand')} title={t('libraryBravais.seamExpand')}>
                 <Maximize2 aria-hidden />
@@ -162,8 +172,17 @@ const SpineSeam: React.FC<{ layer: BravaisLayer; actions: BravaisSeamActions }> 
     );
 };
 
-const BravaisSeamContent: React.FC<BravaisSeamContentProps> = ({ variant, layer, depth, actions }) => {
+const BravaisSeamContent: React.FC<BravaisSeamContentProps> = ({ variant, row = false, layer, depth, actions }) => {
     if (!layer) return null;
+    if (row) {
+        switch (variant) {
+            case 'home': return <BravaisSeamHomeRow layer={layer} compact={false} setLevel={actions.setLevel} openShortcut={actions.openShortcut} />;
+            case 'home-spine': return <BravaisSeamHomeRow layer={layer} compact setLevel={actions.setLevel} openShortcut={actions.openShortcut} />;
+            case 'full': return <BravaisSeamFullRow layer={layer} actions={actions} />;
+            case 'spine': return <BravaisSeamSpineRow layer={layer} actions={actions} />;
+            default: break;
+        }
+    }
     switch (variant) {
         case 'home': return <BravaisSeamHome layer={layer} compact={false} setLevel={actions.setLevel} openShortcut={actions.openShortcut} />;
         case 'home-spine': return <BravaisSeamHome layer={layer} compact setLevel={actions.setLevel} openShortcut={actions.openShortcut} />;

@@ -21,6 +21,11 @@ const path = require('node:path');
 // What was measured, and what was not (2026-10-08):
 //   - Only Chrome on Windows was measured for "the process ends when its last window is closed".
 //     Edge, Brave and Chromium are started the same way on the assumption that they behave alike.
+//     So are Chrome's Beta, Dev and Canary channels and Helium (2026-10-22, none of them run):
+//     they are the same Chromium. Helium is built on ungoogled-chromium; none of its patches
+//     (imputnet/helium patches/series) takes out headless mode or the debugging pipe, and the
+//     `--no-first-run` given here also keeps it from opening its own onboarding page in place of
+//     the sign-in (patches/helium/core/onboarding-page.patch).
 //   - macOS: a browser outlives its last window, so `closed` does not resolve when the window is
 //     closed. The caller either tells the person to quit that browser (`closed` then resolves
 //     'closed'), or offers a "done" button that calls `stop()` (`closed` resolves 'stopped') and
@@ -31,7 +36,12 @@ const path = require('node:path');
 //     and for a sign-in whose time ran out: what was written before is read then (webSignIn.cjs).
 //   - Linux: a snap or flatpak browser cannot use a folder outside its sandbox. `findBrowser`
 //     does not tell such a browser from another; the start is expected to end 'at-once'. The
-//     caller chooses both the browser path and the folder, so it can pass others.
+//     caller chooses both the browser path and the folder, so it can pass others. The commands
+//     of the AUR's Chrome Beta and Dev and of helium-browser-bin are scripts that put the
+//     person's own flags file (chrome-beta-flags.conf, chrome-dev-flags.conf,
+//     helium-browser-flags.conf) before the arguments given here and then `exec` the browser, so
+//     the process keeps its id and the command line still holds `--user-data-dir`; where that
+//     file names a folder too, Chromium takes the later switch, which is the one given here.
 //   - 2026-10-09, `removeProfile` and `endLeftBrowsers`: on Windows only, with stand-in processes
 //     (node scripts) and never a real browser; not run on macOS or Linux. A folder a process
 //     held: the removal answered false after 3.8 s and 16 passes, the mark was still in the
@@ -69,14 +79,74 @@ const ENDED_CHECK_MS = 100;
 const LIST_ON_WINDOWS = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process'
   + ' | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:FOLIA_SIGN_IN_FOLDER) }'
   + ' | ForEach-Object { [string]$_.ProcessId + [char]32 + $_.CommandLine }';
+// Windows: the commands the registry gives for browsers, one a line, best first: the one Windows
+// opens https links with (the person's default browser; newer Windows 11 builds keep it in the
+// ProgId subkey of UserChoiceLatest, measured on build 26200, older ones in UserChoice itself), then every browser registered under
+// StartMenuInternet (the list Windows offers as default apps), the person's own before the
+// computer's. A browser that is not installed (a portable one, #1227) is found only this way.
+// PowerShell names a key's default value `(default)` in every language, where reg.exe prints a
+// translated name in the console's code page.
+const REGISTERED_ON_WINDOWS = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; $ErrorActionPreference = "SilentlyContinue";'
+  + ' $command = { param($key) (Get-ItemProperty -LiteralPath $key).\'(default)\' };'
+  + ' foreach ($choice in "UserChoiceLatest", "UserChoice") {'
+  + ' $key = "HKCU:\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\$choice";'
+  + ' $id = (Get-ItemProperty -LiteralPath "$key\\ProgId").ProgId; if (-not $id) { $id = (Get-ItemProperty -LiteralPath $key).ProgId };'
+  + ' if ($id) { & $command "Registry::HKEY_CLASSES_ROOT\\$id\\shell\\open\\command" } };'
+  + ' foreach ($root in "HKCU:\\SOFTWARE\\Clients\\StartMenuInternet", "HKLM:\\SOFTWARE\\Clients\\StartMenuInternet", "HKLM:\\SOFTWARE\\WOW6432Node\\Clients\\StartMenuInternet") {'
+  + ' Get-ChildItem -LiteralPath $root | ForEach-Object { & $command (Join-Path $_.PSPath "shell\\open\\command") } };'
+  // A key that is not there (no WOW6432Node on a trimmed Windows) is skipped, but would still end
+  // PowerShell with exit code 1 when it is the last statement.
+  + ' exit 0';
+// The executables a browser from the registry may be: those of the browsers in BROWSERS. Another
+// browser, or a portable browser's launcher (which starts the browser and ends at once), would
+// not take the switches the sign-in starts it with, or would end the sign-in 'at-once'.
+const REGISTERED_NAMES = Object.freeze(['chrome.exe', 'msedge.exe', 'brave.exe']);
+// Windows: a switch both runs of the browser are given. Portable browsers made with chrome++
+// (Bush2021/chrome_plus: a version.dll beside msedge.exe or chrome.exe; #1227) start the browser
+// again with switches of their own and end the first process at once, handing over no handles
+// (so no debugging pipe), unless the command line already holds `--portable`; then the process
+// and its `--user-data-dir` are left as given (read in its src/chrome++.cc and src/portable.cc,
+// 2026-11-15; not run). Chromium itself ignores a switch it does not know.
+const PORTABLE_HOLD = '--portable';
 
-// In the order they are looked for. `win` is the path under a programs folder, `mac` the name of
-// the application, `linux` the names it goes by on PATH.
+// In the order they are looked for: the four stable browsers, then Chrome's other channels, then
+// Helium. `name` is what the log calls it. `win` is the path under a programs folder, and
+// `ownOnly` marks one that Windows installs only for one person (Chrome Canary: under
+// LOCALAPPDATA, never under the computer's programs folders). `mac` is the name of the
+// application, which is also the name of its executable inside it; `linux` the names it goes by
+// on PATH.
+//
+// Where the places of the later four come from (looked up 2026-10-22):
+//   - Chrome Beta, Dev, Canary on Windows: Chromium's chrome/install_static/
+//     google_chrome_install_modes.h gives the install suffixes " Beta", " Dev" and " SxS" to
+//     Google\Chrome, and Canary "does not support system-level installs". On macOS,
+//     chrome/installer/mac/signing/modification.py renames the application and its executable
+//     with the channel ("Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"). Puppeteer
+//     (packages/browsers/src/browser-data/chrome.ts) looks at the same places. On Linux,
+//     chrome/installer/linux/common/installer.py makes the command google-chrome-<channel>,
+//     where the Dev channel is called "unstable"; Google's apt repository
+//     (dl.google.com/linux/chrome/deb) holds google-chrome-beta, -unstable and -canary, and the
+//     AUR packages google-chrome-beta and google-chrome-dev install /usr/bin/google-chrome-beta
+//     and /usr/bin/google-chrome-unstable.
+//   - Helium: on Windows its installer (imputnet/helium-windows installer/helium.nsi) puts
+//     imput\Helium\Application\chrome.exe under Program Files for all users or under LOCALAPPDATA
+//     for one. On macOS it is Helium.app with Contents/MacOS/Helium (imputnet/helium-macos
+//     sign_and_package_app.sh and dev.sh). On Linux the project's own .deb and .rpm
+//     (imputnet/helium-linux package/helium-bin.spec) link /usr/bin/helium, and the AUR package
+//     helium-browser-bin links /usr/bin/helium-browser. The AppImage and the archives have no
+//     fixed place and are not looked for. On macOS the name is also that of an older, unrelated
+//     WebKit browser (JadenGeller/Helium, archived): on a Mac with only that one it is started
+//     with Chromium's switches and the sign-in fails on the wait instead of saying no browser was
+//     found. Helium comes last, so this needs a Mac with none of the Chromium browsers above.
 const BROWSERS = Object.freeze([
-  { win: ['Google', 'Chrome', 'Application', 'chrome.exe'], mac: 'Google Chrome', linux: ['google-chrome', 'google-chrome-stable'] },
-  { win: ['Microsoft', 'Edge', 'Application', 'msedge.exe'], mac: 'Microsoft Edge', linux: ['microsoft-edge', 'microsoft-edge-stable'] },
-  { win: ['Chromium', 'Application', 'chrome.exe'], mac: 'Chromium', linux: ['chromium', 'chromium-browser'] },
-  { win: ['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'], mac: 'Brave Browser', linux: ['brave-browser', 'brave'] },
+  { name: 'Chrome', win: ['Google', 'Chrome', 'Application', 'chrome.exe'], mac: 'Google Chrome', linux: ['google-chrome', 'google-chrome-stable'] },
+  { name: 'Edge', win: ['Microsoft', 'Edge', 'Application', 'msedge.exe'], mac: 'Microsoft Edge', linux: ['microsoft-edge', 'microsoft-edge-stable'] },
+  { name: 'Chromium', win: ['Chromium', 'Application', 'chrome.exe'], mac: 'Chromium', linux: ['chromium', 'chromium-browser'] },
+  { name: 'Brave', win: ['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'], mac: 'Brave Browser', linux: ['brave-browser', 'brave'] },
+  { name: 'Chrome Beta', win: ['Google', 'Chrome Beta', 'Application', 'chrome.exe'], mac: 'Google Chrome Beta', linux: ['google-chrome-beta'] },
+  { name: 'Chrome Dev', win: ['Google', 'Chrome Dev', 'Application', 'chrome.exe'], mac: 'Google Chrome Dev', linux: ['google-chrome-unstable'] },
+  { name: 'Chrome Canary', win: ['Google', 'Chrome SxS', 'Application', 'chrome.exe'], ownOnly: true, mac: 'Google Chrome Canary', linux: ['google-chrome-canary'] },
+  { name: 'Helium', win: ['imput', 'Helium', 'Application', 'chrome.exe'], mac: 'Helium', linux: ['helium', 'helium-browser'] },
 ]);
 
 // The requests the cookies are for go to this host and under this path.
@@ -105,12 +175,13 @@ class BrowserSignInError extends Error {
 // is installed for the whole computer or, without administrator rights, for one person. The
 // places of the whole computer come first, for all browsers: a file put under a browser's name
 // into a person's own folder is not taken while any browser is installed for the computer.
-function browserCandidates({ platform = process.platform, env = process.env } = {}) {
-  const under = (roots, place) => BROWSERS.flatMap(browser => roots.map(root => place(root, browser)));
+// Each place is { name, file }: the browser's name for the log, and the path of its executable.
+function browserPlaces({ platform = process.platform, env = process.env } = {}) {
+  const under = (roots, place, browsers = BROWSERS) => browsers.flatMap(browser => roots.map(root => ({ name: browser.name, file: place(root, browser) })));
   if (platform === 'win32') {
     const place = (root, browser) => path.win32.join(root, ...browser.win);
     const shared = [...new Set([env.ProgramW6432 ?? env.ProgramFiles, env['ProgramFiles(x86)']].filter(Boolean))];
-    return [...under(shared, place), ...under([env.LOCALAPPDATA].filter(Boolean), place)];
+    return [...under(shared, place, BROWSERS.filter(browser => !browser.ownOnly)), ...under([env.LOCALAPPDATA].filter(Boolean), place)];
   }
   if (platform === 'darwin') {
     const place = (root, browser) => path.posix.join(root, `${browser.mac}.app`, 'Contents', 'MacOS', browser.mac);
@@ -118,7 +189,34 @@ function browserCandidates({ platform = process.platform, env = process.env } = 
   }
   // A PATH entry that is not absolute names a folder under whichever folder the app was started in.
   const folders = (env.PATH ?? '').split(':').filter(folder => path.posix.isAbsolute(folder));
-  return BROWSERS.flatMap(browser => browser.linux.flatMap(name => folders.map(folder => path.posix.join(folder, name))));
+  return BROWSERS.flatMap(browser => browser.linux.flatMap(command => folders.map(folder => ({ name: browser.name, file: path.posix.join(folder, command) }))));
+}
+
+// The executable a registry command starts: the path in quotes at its start, or, without quotes,
+// the text up to the first ".exe" followed by a space or the end. null when there is none.
+function commandExecutable(command) {
+  const text = String(command ?? '').trim();
+  const quoted = /^"([^"]+)"/.exec(text);
+  if (quoted) return quoted[1];
+  return /^(.+?\.exe)(?=\s|$)/i.exec(text)?.[1] ?? null;
+}
+
+// The browsers a list of registry commands names, in the same order and each once: only absolute
+// paths whose executable is one of REGISTERED_NAMES.
+function registeredPlaces(commands) {
+  const seen = new Set();
+  return commands.map(commandExecutable).filter(file => {
+    if (!file || !path.win32.isAbsolute(file) || !REGISTERED_NAMES.includes(path.win32.basename(file).toLowerCase())) return false;
+    const key = path.win32.normalize(file).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(file => ({ name: 'a browser from the registry', file }));
+}
+
+// The paths of `browserPlaces` alone, in the same order.
+function browserCandidates(options) {
+  return browserPlaces(options).map(place => place.file);
 }
 
 // Whether a command line is that of a browser started on exactly this folder: it gives the
@@ -228,12 +326,31 @@ function createBrowserSignIn({
   remove = removeFolderOnce, wait = ms => new Promise(resolve => { setTimeout(resolve, ms); }),
   execFile = childProcess.execFile, kill = (pid, signal) => process.kill(pid, signal),
 } = {}) {
-  // The path of an installed browser: Chrome, then Edge, Chromium, Brave. null when there is none.
-  const findBrowser = () => {
-    const found = browserCandidates({ platform, env }).find(candidate => exists(candidate)) ?? null;
-    if (found) log(`[Ytm] Sign-in can use ${path.basename(found)}`);
-    else warn('[Ytm] No Chrome, Edge, Chromium or Brave was found for the sign-in');
-    return found;
+  // A file name is cut from its path by the rules of `platform`, not of the computer this runs on.
+  const fileName = file => (platform === 'win32' ? path.win32 : path.posix).basename(file);
+  const portableHold = platform === 'win32' ? [PORTABLE_HOLD] : [];
+  const powerShell = () => path.win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  // Windows: the browsers the registry names (REGISTERED_ON_WINDOWS), as `browserPlaces` gives
+  // places. Empty where the registry could not be read: that is told in the log and is no error.
+  const registeredBrowsers = () => new Promise(resolve => {
+    execFile(powerShell(), ['-NoProfile', '-NonInteractive', '-Command', REGISTERED_ON_WINDOWS],
+      { windowsHide: true, timeout: LIST_LIMIT_MS, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+        // What was printed before a failure is still used: it is whole lines, each one browser.
+        if (error) warn(`[Ytm] The browsers in the registry could not be read (${error?.code ?? 'unknown'})`);
+        resolve(registeredPlaces(String(stdout ?? '').split(/\r?\n/)));
+      });
+  });
+  // The path of a browser: Chrome, then Edge, Chromium, Brave, then Chrome Beta, Dev, Canary and
+  // Helium where they are installed; on Windows, where none is, the default browser and then the
+  // other browsers registered with Windows (a portable one, #1227), if it is one of these.
+  // null when there is none. The log names the browser: on Windows Chrome's channels, Chromium
+  // and Helium are all chrome.exe.
+  const findBrowser = async () => {
+    let found = browserPlaces({ platform, env }).find(place => exists(place.file)) ?? null;
+    if (!found && platform === 'win32') found = (await registeredBrowsers()).find(place => exists(place.file)) ?? null;
+    if (found) log(`[Ytm] Sign-in can use ${found.name} (${fileName(found.file)})`);
+    else warn('[Ytm] No Chrome (of any channel), Edge, Chromium, Brave or Helium was found for the sign-in, installed or registered');
+    return found?.file ?? null;
   };
 
   // Arguments go as a list and without a shell: the paths hold spaces and non-ASCII characters.
@@ -275,7 +392,7 @@ function createBrowserSignIn({
     let child = null;
     try {
       mark(profileDir);
-      child = start(browserPath, [`--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', SIGN_IN_URL], { stdio: 'ignore', detached: true });
+      child = start(browserPath, [`--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', ...portableHold, SIGN_IN_URL], { stdio: 'ignore', detached: true });
     } catch (error) {
       warn(`[Ytm] The sign-in folder could not be marked as the app's own (${error?.code ?? 'unknown'}); no browser was started`);
     }
@@ -283,7 +400,7 @@ function createBrowserSignIn({
       finish('at-once');
       return { closed, stop() {} };
     }
-    log(`[Ytm] The sign-in window was opened with ${path.basename(browserPath)}`);
+    log(`[Ytm] The sign-in window was opened with ${fileName(browserPath)}`);
     child.on('error', error => {
       warn(`[Ytm] The sign-in browser reported an error (${error?.code ?? 'unknown'})`);
       // Without a process id the browser never started; with one, the process is still there
@@ -320,7 +437,7 @@ function createBrowserSignIn({
       reject(new BrowserSignInError(code));
     };
     const child = start(browserPath, [
-      '--headless=new', '--remote-debugging-pipe', '--no-startup-window', `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check',
+      '--headless=new', '--remote-debugging-pipe', '--no-startup-window', `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', ...portableHold,
     ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], windowsHide: true });
     // Listened to from the start, before the pipes are looked at: a browser that could not be
     // started for want of file handles comes without pipes and says so a moment later, and an
@@ -449,7 +566,7 @@ function createBrowserSignIn({
   // process, and the folder is looked for here.
   const processesNaming = dir => new Promise((resolve, reject) => {
     const [file, args, extra] = platform === 'win32'
-      ? [path.win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ? [powerShell(),
         ['-NoProfile', '-NonInteractive', '-Command', LIST_ON_WINDOWS], { env: { ...env, FOLIA_SIGN_IN_FOLDER: dir } }]
       : ['/bin/ps', ['-axww', '-o', 'pid=,command='], {}];
     execFile(file, args, { ...extra, windowsHide: true, timeout: LIST_LIMIT_MS, maxBuffer: 32 * 1024 * 1024 }, (error, stdout) => {
@@ -504,6 +621,6 @@ function createBrowserSignIn({
 }
 
 module.exports = {
-  createBrowserSignIn, BrowserSignInError, browserCandidates, cookieHeaderOf, createPipeReader, isSignedIn, youtubeCookies, startedOn,
+  createBrowserSignIn, BrowserSignInError, browserCandidates, commandExecutable, cookieHeaderOf, registeredPlaces, createPipeReader, isSignedIn, youtubeCookies, startedOn,
   FOLDER_MARK, SIGN_IN_URL,
 };

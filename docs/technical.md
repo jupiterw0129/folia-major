@@ -101,7 +101,7 @@ windowrule {
 
 如果使用前端版本的话，需要先自行部署该 API 服务。
 
-QQ 音乐是可选音源，由 npm 包 `@yakult-green-tea/qq-music-api` 提供，有两种部署形态。一是常驻 Node 进程（Docker 容器、裸 Node，或 Electron 主进程内嵌），功能最完整，支持手机 QQ 扫码、微信扫码和 QQ 音乐 App 扫码；后端 3.3.2 起 Folia 只显示一张 QQ 音乐 App 扫码的二维码，手机 QQ、微信、QQ 音乐 App 都能扫。二是 serverless：从 3.0.0 起该包提供 `./serverless` 导出，本仓库已内置 Cloudflare Workers 与 Vercel 两个平台的入口，把 `VITE_QQ_API_BASE` 填成 `/api/qq` 并配好 `QQ_SESSION_SECRET` 即可，不需要单独部署 API 实例。serverless 形态默认支持微信扫码，3.3.3 起也支持手机 QQ 扫码（走 QQ 互联的网页登录，不用长连接），且 `/getMusicPlay` 必须先登录；Cloudflare 可选地绑定 Durable Object（`QQ_QR_CHANNEL` → `QqQrChannel`），手机 QQ 扫码改走长连接，3.3.2 起还多一个 QQ 音乐 App 扫码。完整部署步骤与排错方法见 [QQ 音乐部署指南](qq-music-deployment.md)；Docker 镜像、卷和常驻服务细节见 [`deploy/docker/qq-api/README.md`](../deploy/docker/qq-api/README.md)。Electron 版在主进程内直接启动该包，不需要单独部署。Folia 锁定 3.3.3：电台页的每日推荐、私人 FM（猜你喜欢）与推荐歌单，往自建歌单加歌删歌和收藏歌单，是 3.3.0 新增的接口；红心与收藏专辑是 3.3.1 新增的；3.3.2、3.3.3 新增的接口（音乐云盘、QQ 音乐 App 扫码、续期、排行榜、新碟、刷歌模式等）见 [`deploy/docker/qq-api/README.md`](../deploy/docker/qq-api/README.md)。不喜欢与历史日推后端还没有，QQ 不提供这两项。
+QQ 音乐是可选音源，由 npm 包 `@yakult-green-tea/qq-music-api` 提供，有两种部署形态。一是常驻 Node 进程（Docker 容器、裸 Node，或 Electron 主进程内嵌），功能最完整，支持手机 QQ 扫码、微信扫码和 QQ 音乐 App 扫码；后端 3.3.2 起 Folia 只显示一张 QQ 音乐 App 扫码的二维码，手机 QQ、微信、QQ 音乐 App 都能扫。二是 serverless：从 3.0.0 起该包提供 `./serverless` 导出，本仓库已内置 Cloudflare Workers 与 Vercel 两个平台的入口，把 `VITE_QQ_API_BASE` 填成 `/api/qq` 并配好 `QQ_SESSION_SECRET` 即可，不需要单独部署 API 实例。serverless 形态默认支持微信扫码，3.3.3 起也支持手机 QQ 扫码（走 QQ 互联的网页登录，不用长连接），且 `/getMusicPlay` 必须先登录；Cloudflare 可选地绑定 Durable Object（`QQ_QR_CHANNEL` → `QqQrChannel`），手机 QQ 扫码改走长连接，3.3.2 起还多一个 QQ 音乐 App 扫码。完整部署步骤与排错方法见 [QQ 音乐部署指南](qq-music-deployment.md)；Docker 镜像、卷和常驻服务细节见 [`deploy/docker/qq-api/README.md`](../deploy/docker/qq-api/README.md)。Electron 版在主进程内直接启动该包，不需要单独部署。Folia 锁定 3.3.6。这个版本的后端提供独立的私人 FM 接口、每日推荐历史、歌曲不喜欢、探索页首页 feed 和听歌排行。旧版本各项功能所需的最低版本见 [QQ 音乐部署指南](qq-music-deployment.md)。
 
 ### AI 能力
 
@@ -111,6 +111,8 @@ Folia 当前支持以下两类 AI 提供方式：
 - OpenAI 兼容 API，例如 DeepSeek、ChatGPT 接口等
 
 Gemini 通常更适合当前项目场景，因为 JSON 输出相对稳定。
+
+桌面版的设置里可以直接选 OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、智谱 GLM、阿里云 Qwen、腾讯云 TokenHub、小米 MiMo，或自定义兼容接口；有多个站点的（如 Kimi、GLM 的国内站和国际站，Qwen 的各地域）可以选站点。每家供应商一个适配器（`shared/ai/`），按接口地址的主机名选用，分别决定推理开关、温度范围、上限字段和结构化输出：歌词分词和测试连接能关思考就关、关不掉就用最低档；主题用最低档或关掉。网页版用同一批适配器，同样按 `OPENAI_API_URL` 的主机名推断，但只走 OpenAI 兼容协议（没有网页版的 Anthropic 原生协议）。
 
 ### Stage API
 
@@ -174,11 +176,11 @@ vercel env pull .env.local
 | `VITE_AI_PROVIDER` | AI 提供商，`google` 或 `openai` | 是 |
 | `GEMINI_API_KEY` | Gemini API Key | 使用 Gemini 时需要 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key | 使用 OpenAI兼容接口 时需要 |
-| `OPENAI_API_URL` | OpenAI 兼容接口地址，可填 base URL 或完整 `chat/completions` 地址 | 使用 OpenAI兼容接口 时需要 |
-| `OPENAI_API_MODEL` | 模型名，例如 `gpt-5.6-luna`、`gpt-4.1-mini`、`deepseek-v4-flash` | 使用 OpenAI兼容接口 时需要 |
-| `OPENAI_API_TEMPERATURE` | 温度，范围 `0`–`2`；留空或无效时默认使用 `0.7` | 否 |
+| `OPENAI_API_URL` | OpenAI 兼容接口地址，可填 base URL 或完整 `chat/completions` 地址；留空等于 OpenAI 官方接口。供应商按主机名推断（`api.openai.com`、`api.deepseek.com`、`api.moonshot.cn` / `api.moonshot.ai`、`open.bigmodel.cn` / `api.z.ai`、百炼 `dashscope*.aliyuncs.com`、TokenHub、`*.xiaomimimo.com`），其余主机按自定义兼容接口处理 | 使用 OpenAI兼容接口 时需要 |
+| `OPENAI_API_MODEL` | 模型名，例如 `gpt-5.6-luna`、`deepseek-flash`；留空时用该供应商的默认模型（OpenAI 与自定义接口 `gpt-5.6-luna`、DeepSeek `deepseek-flash`、Kimi `kimi-k2.6`、GLM `glm-5.2`、Qwen `qwen3.8-flash`、TokenHub `deepseek-v4-flash`、MiMo `mimo-v2.6-flash`） | 否 |
+| `OPENAI_API_TEMPERATURE` | 温度，留空或无效时默认使用 `0.7`；只发给接受它的供应商，并截到该供应商的范围 | 否 |
 
-注意：部分模型对于温度参数有特殊要求，例如 `kimi-k3` 要求温度必须为 `1`。
+注意：温度按供应商处理。OpenAI 和 Kimi 从不发温度（OpenAI 的推理模型带温度会报错，Kimi 的模型采样是固定的）；GLM 截到 `1`，MiMo 截到 `1.5`，Qwen 截到 `1.99`，TokenHub 只发给部分模型；DeepSeek 和自定义接口按 `0`–`2`。
 
 Gemini 示例：
 
@@ -223,11 +225,11 @@ VITE_NETEASE_API_BASE=http://localhost:3000
 VITE_AI_PROVIDER=openai
 OPENAI_API_KEY=your_api_key
 OPENAI_API_URL=https://api.deepseek.com
-OPENAI_API_MODEL=deepseek-v4-flash
+OPENAI_API_MODEL=deepseek-flash
 OPENAI_API_TEMPERATURE=0.7
 ```
 
-如果你使用的是 OpenAI 官方接口，也可以这样写：
+如果你使用的是 OpenAI 官方接口，也可以这样写（OpenAI 不发温度，`OPENAI_API_TEMPERATURE` 不用填）：
 
 ```env
 VITE_NETEASE_API_BASE=http://localhost:3000
@@ -235,7 +237,6 @@ VITE_AI_PROVIDER=openai
 OPENAI_API_KEY=your_api_key
 OPENAI_API_URL=https://api.openai.com/v1
 OPENAI_API_MODEL=gpt-5.6-luna
-OPENAI_API_TEMPERATURE=0.7
 ```
 
 #### 3. 启动开发环境

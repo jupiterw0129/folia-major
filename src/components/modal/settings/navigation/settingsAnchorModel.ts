@@ -12,7 +12,9 @@ export const SETTINGS_ANCHOR_DEFINITIONS = {
     // pages/AppearancePage
     lyricsRenderer: { section: 'appearance' },
     themePresets: { section: 'appearance' },
-    electronSettings: { section: 'appearance' },
+
+    // pages/AiServicePage — the one AI connection every AI feature reads
+    electronSettings: { section: 'ai' },
 
     // pages/PlayerPage
     playbackEntryView: { section: 'player' },
@@ -30,6 +32,7 @@ export const SETTINGS_ANCHOR_DEFINITIONS = {
     grid3dCardStyle: { section: 'home' },
     rememberHomeCardPosition: { section: 'home' },
     gridViewCardSettings: { section: 'home' },
+    scratchpadSettings: { section: 'home' },
 
     // pages/LyricsPage
     localLyricFormatOrder: { section: 'lyrics' },
@@ -41,6 +44,10 @@ export const SETTINGS_ANCHOR_DEFINITIONS = {
     audioOutputSettings: { section: 'playback' },
     lyrics: { section: 'lyrics' },
     scrobbleSettings: { section: 'integration' },
+
+    // pages/hifi/ on pages/PlaybackPage (desktop app only); the mpv output group only while mpv is the engine.
+    hifiEngine: { section: 'playback' },
+    hifiOutput: { section: 'playback' },
 
     // pages/GeneralPage, and the pinned commands on pages/InteractionPage
     languageSettings: { section: 'general' },
@@ -78,9 +85,15 @@ export const SETTINGS_ANCHOR_DEFINITIONS = {
     wallpaperMode: { section: 'desktop' },
     updateCheck: { section: 'general' },
 
-    // pages/GraphicsPage
+    // pages/RemotePage (desktop app only)
+    remoteControl: { section: 'remote' },
+    remoteLyrics: { section: 'remote' },
+
+    // pages/GraphicsPage; the render GPU row only in the Windows desktop app.
     graphicsPerformance: { section: 'graphics' },
     graphicsMotion: { section: 'graphics' },
+    gpuPreference: { section: 'graphics' },
+    lyricRenderScale: { section: 'graphics' },
 
     // pages/ModsPage
     modSystem: { section: 'mods' },

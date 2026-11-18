@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import type { ModClearCacheResult, ModExportProgress, ModFfmpegStatus, ModLogEntry, ModMainCallStats, ModRpcMessage, ModRuntimeInfo, ModRuntimeSnapshot, ModSecretChange, ModStorageUsageResult } from './mods/types';
+import type { PerfCheckProcessMemory, PerfCheckSettings } from './components/perfCheck/perfCheckTypes';
 
 declare global {
   const __COMMIT_HASH__: string;
@@ -29,12 +30,26 @@ declare global {
   /** Unsaved AI settings sent by the "test connection" button. */
   interface AiConnectionTestPayload {
     provider: 'gemini' | 'openai';
+    /**
+     * The form's preset (shared/ai/providerRegistry.mjs). 'custom' requires apiUrl: a custom
+     * connection must never fall back to a built-in endpoint. Requests follow apiUrl's host.
+     */
+    presetId?: string;
     /** Typed key; empty means "use the saved key", which only the main process can read. */
     apiKey: string;
     apiUrl?: string;
     model?: string;
     stream?: boolean;
     useSystemProxy?: boolean;
+  }
+
+  interface AiModelListResult {
+    ok: boolean;
+    models?: { id: string; name: string }[];
+    status?: number;
+    errorKind?: 'invalid' | 'config' | 'auth' | 'http' | 'network' | 'timeout' | 'empty';
+    /** On a failure: model ids the provider suggests instead (shared/ai adapters' suggestedModels). */
+    suggestedModels?: string[];
   }
 
   interface AiConnectionTestResult {
@@ -227,6 +242,8 @@ declare global {
     status: 'starting' | 'running' | 'error' | 'unavailable';
     port: number | null;
     error: string | null;
+    /** 这次启动没能读出加密的登录仓库：后端里没有任何会话，后端不认一个 session 不说明登录没了。 */
+    sessionStoreUnreadable?: boolean;
     updatedAt: number;
   }
 
@@ -241,6 +258,10 @@ declare global {
     canGoPrevious: boolean;
     canGoNext: boolean;
     isPlaying: boolean;
+    title?: string | null;
+    artist?: string | null;
+    loopMode?: 'off' | 'all' | 'one';
+    canCycleLoop?: boolean;
   }
 
   type ElectronTaskbarControlAction = 'previous' | 'play-pause' | 'next';
@@ -266,6 +287,8 @@ declare global {
     | { type: 'stop-export' }
     | { type: 'cancel-export' }
     | { type: 'toggle-like' }
+    | { type: 'open-remote-settings' }
+    | import('./types/remoteControl').RemoteQueueCommand
     | import('./types/remoteControl').RemoteActionActivation;
 
   type ElectronVideoExportStatus =
@@ -343,6 +366,9 @@ declare global {
     updatedAt: number;
     mainWindowWidth?: number;
     mainWindowHeight?: number;
+    queue?: readonly import('./types/remoteControl').RemoteQueueItem[];
+    queuePlayingKey?: string | null;
+    queueReadOnly?: boolean;
   }
 
   interface ElectronPlaybackSyncBridgeStatus {
@@ -414,10 +440,18 @@ declare global {
     lastCheckedAt: number | null;
     lastSeenVersion: string | null;
     updateSeen: boolean;
+    /** Where the found version came from: GitHub, or a public proxy when GitHub could not be read. */
+    checkedVia?: 'github' | 'mirror' | null;
+    /** The last request to GitHub for this update (the check, or the download) failed. */
+    githubFailed?: boolean;
     downloadProgress?: {
       percent: number;
       transferred?: number;
       total?: number;
+      /** Which download this is: only the blocks that changed, or the whole installer. Null when unknown. */
+      mode?: 'differential' | 'full' | null;
+      /** The whole installer is being downloaded because the differential download failed. */
+      fallback?: boolean;
     } | null;
   }
 
@@ -485,12 +519,27 @@ declare global {
     | StageNavidromeLyricSource
     | StageQrcLyricSource;
 
+  interface StageLyricsClock {
+    positionMs: number;
+    paused: boolean;
+    sampledAtMs: number;
+  }
+
   interface StageLyricsSession {
     title?: string;
     artist?: string;
     album?: string;
-    lyricSource: StageLyricSource;
+    lyricSource?: StageLyricSource;
+    durationMs?: number;
+    coverUrl?: string;
+    clock?: StageLyricsClock;
     updatedAt: number;
+  }
+
+  interface StageLyricsClockUpdate {
+    sessionUpdatedAt: number;
+    clock: StageLyricsClock;
+    durationMs?: number;
   }
 
   interface StageMediaSession {
@@ -512,18 +561,41 @@ declare global {
 
   type StageSession = StageMediaSession;
 
+  /** One song a Stage search found; `songRef` (`<provider>:<songId>`) plays or queues it. */
   interface StageSearchResult {
-    songId: number;
+    songId: number | string;
     title: string;
     artists: string[];
     album: string;
     durationMs: number | null;
     coverUrl: string | null;
+    provider: string;
+    songRef: string;
   }
 
-  interface StageExternalPlayRequest {
+  /** A song the Stage API names: the omni provider and its id there. */
+  interface StageSongRef {
+    providerId: string;
+    songId: number | string;
+  }
+
+  /** A search the Stage API asks the renderer to run at one omni provider. */
+  interface StagePlayerSearchRequest {
     requestId: string;
-    songId: number;
+    providerId: string;
+    query: string;
+    limit: number;
+  }
+
+  interface StagePlayerSearchResult {
+    requestId: string;
+    ok: boolean;
+    error?: string | null;
+    songs?: StageSearchResult[];
+  }
+
+  interface StageExternalPlayRequest extends StageSongRef {
+    requestId: string;
     appendToQueue?: boolean;
   }
 
@@ -638,8 +710,8 @@ declare global {
   interface StagePlayerQueueRequest {
     requestId: string;
     action: 'append' | 'insert-next' | 'remove' | 'move' | 'select' | 'clear';
-    songId?: number;
-    songIds?: number[];
+    /** The songs an append or insert-next adds, in order. */
+    songs?: StageSongRef[];
     queueItemId?: string;
     fromQueueItemId?: string;
     fromIndex?: number;
@@ -769,6 +841,20 @@ declare global {
         weights: Uint8Array<ArrayBuffer>;
         manifest: import('./services/analysis/htdemucsWgsl/runtime').HtdemucsWgslManifest;
       } | null>;
+      /** Opens the performance check's window (components/perfCheck/); main window only. */
+      openPerfCheck?: () => Promise<boolean>;
+      /** Every process's memory, MB, summed and by Chromium process type: the check's memory reading. */
+      getPerfCheckMetrics?: () => Promise<PerfCheckProcessMemory>;
+      /** From the check window: a line for the runtime log, written by the main process. */
+      logPerfCheck?: (text: string) => Promise<boolean>;
+      /** From the check window: the measuring is over (done, failed or cancelled): the main window lets go of its hold. */
+      finishPerfCheck?: () => Promise<boolean>;
+      /** From the check window: the settings the user chose, applied in the main window. */
+      applyPerfCheckChoice?: (choice: PerfCheckSettings) => Promise<boolean>;
+      /** In the main window: whether the check window is open, to hold the main window's picture and GPU analysis meanwhile. */
+      onPerfCheckState?: (callback: (state: { running: boolean }) => void) => () => void;
+      /** In the main window: settings chosen in the check window, to apply; returns the unsubscribe. */
+      onPerfCheckApply?: (callback: (choice: PerfCheckSettings) => void) => () => void;
       /**
        * Automix switched on or off. While on, the analysis worker keeps htdemucs loaded across tracks;
        * off releases it in that process. One-way.
@@ -836,14 +922,35 @@ declare global {
       /** The tray asked to enter wallpaper mode; the renderer shows the confirmation before entering. */
       onWallpaperEntryRequested?: (callback: () => void) => () => void;
       onWallpaperInputMonitorRequested?: (callback: () => void) => () => void;
+      /** macOS wallpaper mode with Stage Manager on and the desktop icons shown, without the Accessibility grant the click guard needs (issue #698). */
+      onWallpaperAccessibilitySuggested?: (callback: () => void) => () => void;
+      /**
+       * Windows only: the GPU choice this run started with (a later change waits for a restart), whether
+       * it came from the setting or a command-line switch, and the name of the adapter Chromium renders
+       * on. null off Windows or when the asking page is not the main window.
+       */
+      getGpuPreferenceState?: () => Promise<{
+          applied: 'auto' | 'high-performance' | 'low-power';
+          source: 'setting' | 'command-line';
+          activeGpu: string | null;
+      } | null>;
       /** The connected displays and the display chosen for wallpaper mode. null when the asking page is not the main window. */
       getWallpaperDisplays?: () => Promise<ElectronWallpaperDisplaysState | null>;
       /** Chooses a connected display by id, or automatic with null; a running wallpaper moves at once. Answers the new state. */
       setWallpaperDisplay?: (displayId: number | null) => Promise<ElectronWallpaperDisplaysState | null>;
       /** A display was connected, removed or changed, or the choice changed. */
       onWallpaperDisplaysChanged?: (callback: (state: ElectronWallpaperDisplaysState) => void) => () => void;
+      /** macOS wallpaper mode: the on-screen controls' rects (viewport CSS px), covered by click catchers so Finder and Stage Manager never see those clicks. */
+      setWallpaperHitRegions?: (rects: Array<{ left: number; top: number; width: number; height: number }>) => void;
       setPlaybackDisplaySleepBlockingActive: (active: boolean) => Promise<boolean>;
-      setAppLocale: (localeKey: 'en' | 'zh-CN' | 'zh-TW' | 'in') => Promise<string>;
+      /**
+       * The 后台节流 switch for the main window: `active` while it is on and not standing down
+       * (wallpaper, video export, OBS browser source); `hidden` while it is and the window is
+       * minimised or hidden to the tray.
+       */
+      getBackgroundThrottlingState?: () => Promise<{ active: boolean; hidden: boolean }>;
+      onBackgroundThrottlingChanged?: (callback: (state: { active: boolean; hidden: boolean }) => void) => () => void;
+      setAppLocale: (localeKey: 'en' | 'zh-CN' | 'zh-TW' | 'in' | 'vi') => Promise<string>;
       getCacheDirectory: () => Promise<ElectronCacheDirectoryResult>;
       chooseCacheDirectory: () => Promise<ElectronCacheDirectoryResult>;
       resetCacheDirectory: () => Promise<ElectronCacheDirectoryResult>;
@@ -880,6 +987,7 @@ declare global {
       segmentLyrics: (lines: string[]) => Promise<string[][]>;
       /** Sends "hello" with the unsaved AI settings from the form and reports the reply. Never rejects on connection failures. */
       testAiConnection: (settings: AiConnectionTestPayload) => Promise<AiConnectionTestResult>;
+      listAiModels: (settings: AiConnectionTestPayload) => Promise<AiModelListResult>;
       fetchLyricProxy: (
         url: string,
         init?: {
@@ -898,6 +1006,14 @@ declare global {
       restartNeteaseApi: (reason?: 'needed') => Promise<ElectronNeteaseApiStatus>;
       onNeteaseApiStatusChanged: (callback: (status: ElectronNeteaseApiStatus) => void) => () => void;
       getKugouApiStatus: () => Promise<ElectronKugouApiStatus>;
+      fnmusicRequest: (
+        operation: 'login' | 'logout' | 'request' | 'stream' | 'coverUrl' | 'getStatus',
+        params?: import('./services/onlineMusic/fnmusic/fnmusicTransport').FnMusicBridgeParams,
+      ) => Promise<import('./services/onlineMusic/fnmusic/fnmusicTransport').FnMusicBridgeResult>;
+      qishuiRequest: (
+        operation: import('./services/onlineMusic/qishui/qishuiTransport').QishuiOperation,
+        params?: import('./services/onlineMusic/qishui/qishuiTransport').QishuiParams,
+      ) => Promise<import('./services/onlineMusic/qishui/qishuiTransport').QishuiBridgeResult>;
       bodianRequest: (
         operation: import('./services/onlineMusic/bodian/bodianTransport').BodianOperation,
         params?: import('./services/onlineMusic/bodian/bodianTransport').BodianParams,
@@ -906,6 +1022,10 @@ declare global {
         operation: import('./services/onlineMusic/ytm/ytmTransport').YtmOperation,
         params?: import('./services/onlineMusic/ytm/ytmTransport').YtmParams,
       ) => Promise<import('./services/onlineMusic/ytm/ytmTransport').YtmBridgeResult>;
+      appleMusicRequest: (
+        operation: import('./services/onlineMusic/appleMusic/appleMusicTransport').AppleMusicOperation,
+        params?: import('./services/onlineMusic/appleMusic/appleMusicTransport').AppleMusicParams,
+      ) => Promise<import('./services/onlineMusic/appleMusic/appleMusicTransport').AppleMusicBridgeResult>;
       spotifyRequest: (
         operation: import('./services/onlineMusic/spotify/spotifyTransport').SpotifyOperation,
         params?: import('./services/onlineMusic/spotify/spotifyTransport').SpotifyParams,
@@ -924,6 +1044,8 @@ declare global {
       quitApp: () => Promise<boolean>;
       isWindowMaximized: () => Promise<boolean>;
       isWindowFullscreen: () => Promise<boolean>;
+      hasNativeTrafficLights: () => Promise<boolean>;
+      setTrafficLightsVisible: (visible: boolean) => Promise<boolean>;
       onWindowFullscreenChanged: (callback: (fullscreen: boolean) => void) => () => void;
       getWindowTransparentMode: () => Promise<boolean>;
       setWindowTransparentMode: (
@@ -939,9 +1061,11 @@ declare global {
         callback: (payload: { requestId: string }) => void,
       ) => () => void;
       setNativeTheme: (themeSource: 'system' | 'light' | 'dark') => Promise<void>;
+      /** Whether a key-capture field in this window is recording: Windows' window menu (Alt+Space) is refused meanwhile. */
+      setKeyCaptureActive?: (active: boolean) => void;
       getMainWindowClickThroughEnabled: () => Promise<boolean>;
       setMainWindowClickThroughEnabled: (enabled: boolean) => Promise<boolean>;
-      setMainWindowClickThroughUnlockHover: (active: boolean) => Promise<boolean>;
+      setMainWindowClickThroughUnlockHover: (active: boolean, viewportWidth?: number, coordinates?: { screenX: number; clientX: number }, side?: 'left' | 'right') => Promise<boolean>;
       getMainWindowAlwaysOnTop: () => Promise<boolean>;
       setMainWindowAlwaysOnTop: (enabled: boolean) => Promise<boolean>;
       onMainWindowClickThroughChanged: (callback: (state: ElectronMainWindowClickThroughState) => void) => () => void;
@@ -953,7 +1077,7 @@ declare global {
       publishObsBrowserSourceAudio: (audio: ElectronObsBrowserSourceAudio) => Promise<boolean>;
       getLyricApiStatus: () => Promise<import('./types/lyricApi').LyricApiStatus>;
       setLyricApiEnabled: (enabled: boolean) => Promise<import('./types/lyricApi').LyricApiStatus>;
-      publishLyricApiData: (lyrics: import('./types').LyricData | null, offset: number) => Promise<boolean>;
+      publishLyricApiData: (lyrics: import('./types').LyricData | null, offset: number, clipStartMs?: number) => Promise<boolean>;
       onLyricApiStatusChanged: (callback: (status: import('./types/lyricApi').LyricApiStatus) => void) => () => void;
       getDiscordPresenceStatus: () => Promise<ElectronDiscordPresenceStatus>;
       publishDiscordPresenceSnapshot: (snapshot: ElectronDiscordPresenceSnapshot) => Promise<ElectronDiscordPresenceStatus>;
@@ -976,11 +1100,12 @@ declare global {
       getRemoteControlAlwaysOnTop: () => Promise<boolean>;
       setRemoteControlAlwaysOnTop: (alwaysOnTop: boolean) => Promise<boolean>;
       /** alwaysOnTopSupported is false on native Wayland, where setAlwaysOnTop is silently ignored. */
-      getRemoteControlWindowSettings: () => Promise<{ hideTitlebar: boolean; clickThrough: boolean; expandCover?: boolean; alwaysOnTopSupported?: boolean }>;
-      onRemoteControlWindowSettingsChanged: (callback: (settings: { hideTitlebar: boolean; clickThrough: boolean; expandCover?: boolean; alwaysOnTopSupported?: boolean }) => void) => () => void;
+      getRemoteControlWindowSettings: () => Promise<{ hideTitlebar: boolean; clickThrough: boolean; expandCover?: boolean; textShade?: boolean; alwaysOnTopSupported?: boolean }>;
+      onRemoteControlWindowSettingsChanged: (callback: (settings: { hideTitlebar: boolean; clickThrough: boolean; expandCover?: boolean; textShade?: boolean; alwaysOnTopSupported?: boolean }) => void) => () => void;
       /** Null when the main process cannot tell (a Wayland session): the page then uses its own mouse events. */
       getRemoteControlPointerInside: () => Promise<boolean | null>;
       onRemoteControlPointerInside: (callback: (inside: boolean) => void) => () => void;
+      setRemoteControlQueueExpansion: (wantedHeight: number | null, options?: { preview?: boolean; direction?: 'down' | 'up' }) => Promise<import('./types/remoteControl').RemoteQueueExpansion | null>;
       publishRemoteControlSnapshot: (snapshot: ElectronRemoteControlSnapshot) => Promise<boolean>;
       getRemoteControlSnapshot: () => Promise<ElectronRemoteControlSnapshot | null>;
       sendRemoteControlCommand: (command: ElectronRemoteControlCommand) => Promise<boolean>;
@@ -1009,11 +1134,14 @@ declare global {
       publishStagePlayerSnapshot: (snapshot: StagePlayerSnapshot, options?: { forcePlaybackEvent?: boolean }) => Promise<StagePlayerSnapshot>;
       completeStagePlayerControlRequest: (result: StagePlayerRequestResult) => Promise<boolean>;
       completeStagePlayerQueueRequest: (result: StagePlayerRequestResult) => Promise<boolean>;
+      completeStagePlayerSearchRequest: (result: StagePlayerSearchResult) => Promise<boolean>;
       onStageSessionUpdated: (callback: (status: StageStatus) => void) => () => void;
       onStageSessionCleared: (callback: (status: StageStatus) => void) => () => void;
+      onStageLyricsClockUpdated?: (callback: (update: StageLyricsClockUpdate) => void) => () => void;
       onStageExternalPlayRequest: (callback: (request: StageExternalPlayRequest) => void) => () => void;
       onStagePlayerControlRequest: (callback: (request: StagePlayerControlRequest) => void) => () => void;
       onStagePlayerQueueRequest: (callback: (request: StagePlayerQueueRequest) => void) => () => void;
+      onStagePlayerSearchRequest: (callback: (request: StagePlayerSearchRequest) => void) => () => void;
       mods?: {
         listMods: () => Promise<{ mods: ModRuntimeInfo[]; ffmpeg: ModFfmpegStatus; directories: string[]; startSkipped?: boolean }>;
         setModEnabled: (modId: string, enabled: boolean) => Promise<{ ok: boolean; error?: string; mods: ModRuntimeInfo[] }>;
@@ -1040,6 +1168,40 @@ declare global {
         onModLog: (callback: (entry: ModLogEntry) => void) => () => void;
         onModRpcMessage: (callback: (message: ModRpcMessage) => void) => () => void;
         onModSecretChanged: (callback: (change: ModSecretChange) => void) => () => void;
+      };
+      /** HiFi 原生直通后端（mpv 子进程）。只在桌面版存在。 */
+      hifi?: {
+        getRuntimeStatus: () => Promise<import('./types/hifi').HifiRuntimeStatus>;
+        detectRuntime: () => Promise<import('./types/hifi').HifiRuntimeStatus>;
+        /** 弹系统文件框选 mpv 可执行文件；取消时为 null。 */
+        pickRuntimePath: () => Promise<string | null>;
+        installRuntime: () => Promise<import('./types/hifi').HifiInstallResult>;
+        cancelInstall: () => Promise<void>;
+        configure: (config: import('./types/hifi').HifiEngineConfig) => Promise<void>;
+        listDevices: () => Promise<import('./types/hifi').HifiDevice[]>;
+        load: (request: import('./types/hifi').HifiLoadRequest) => Promise<import('./types/hifi').HifiLoadResult>;
+        play: () => Promise<void>;
+        pause: () => Promise<void>;
+        seek: (positionSec: number) => Promise<void>;
+        stop: () => Promise<void>;
+        setLoopFile: (loop: boolean) => Promise<void>;
+        preloadNext: (request: import('./types/hifi').HifiLoadRequest) => Promise<boolean>;
+        clearNext: () => Promise<void>;
+        getSnapshot: () => Promise<import('./types/hifi').HifiEngineState>;
+        /** Linux：用 pw-dump 读 mpv 那路流在 PipeWire 里的去向；不是 PipeWire、没有 pw-dump、找不到流时为 null。 */
+        probeOutput: () => Promise<import('./types/hifi').HifiOutputProbe | null>;
+        respondRead: (readId: string, response: import('./types/hifi').HifiReadResponse) => Promise<void>;
+        /** Linux：HiFi 在放时主进程登记的 MPRIS 的状态；active 为假时交还总线名。别的平台没有处理方。 */
+        setMprisState?: (state: import('./types/hifi').HifiMprisState) => Promise<void>;
+        setMprisArtwork?: (trackKey: string, artwork: import('./types/hifi').HifiMprisArtwork | null) => Promise<void>;
+        onMprisCommand?: (callback: (command: import('./types/hifi').HifiMprisCommand) => void) => () => void;
+        /** HiFi 在放时主进程登记 MPRIS 成没成（每次推送后报）；没成时页面退回静音保活。 */
+        onMprisStatus?: (callback: (status: import('./types/hifi').HifiMprisStatus) => void) => () => void;
+        onState: (callback: (state: import('./types/hifi').HifiEngineState) => void) => () => void;
+        onClock: (callback: (update: import('./types/hifi').HifiClockUpdate) => void) => () => void;
+        onError: (callback: (event: import('./types/hifi').HifiErrorEvent) => void) => () => void;
+        onInstallProgress: (callback: (progress: import('./types/hifi').HifiInstallProgress) => void) => () => void;
+        onReadRequest: (callback: (request: import('./types/hifi').HifiReadRequest) => void) => () => void;
       };
     };
   }

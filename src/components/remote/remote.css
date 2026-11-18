@@ -3,9 +3,10 @@
    on the right, and 174 px left of it for the sleeve, the look of the window when not in use
    (with the switch "expand cover" on). Every colour is the ink (--remote-ink) at some strength; the
    theme and the background mode only change the ink and the card under it. What the pointer
-   lights up hangs on [data-lit]; the keys making way for the line when not in use on [data-idle];
-   the opened card and the large cover on [data-sleeve]. A rule on a look carries the transition
-   into that look: into the sleeve is slow and calm (0.62 s), back into use is quick (0.32 s). */
+   lights up hangs on [data-lit]; the keys making way for the line when not in use, and the
+   transparent background's bare look, on [data-idle]; the opened card and the large cover on
+   [data-sleeve]. A rule on a look carries the transition into that look: into the sleeve is slow
+   and calm (0.62 s), back into use is quick (0.32 s). */
 
 .remote-window {
   --remote-ink: 255, 255, 255;
@@ -14,6 +15,7 @@
   --remote-unsung: rgba(var(--remote-ink), 0.4);
   --remote-second: rgba(var(--remote-ink), 0.64);
   --remote-next: rgba(var(--remote-ink), 0.3);
+  --remote-upcoming: rgba(var(--remote-ink), 0.5);
   --transition-glow-color: rgba(var(--remote-ink), 0.8);
   --remote-settle: cubic-bezier(0.32, 0.72, 0, 1);
   --remote-snap: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -26,6 +28,15 @@
   line-height: normal;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  transition: opacity 140ms ease-out;
+}
+
+/* The window's top edge is moving to show or hide the queue above the card (useRemoteQueue): the
+   compositor would show the last frame at the new spot, so nothing is drawn until the page has
+   laid itself out at the new size. */
+.remote-window[data-shifting='true'] {
+  opacity: 0;
+  transition: opacity 90ms ease-out;
 }
 
 .remote-window[data-theme='light'] {
@@ -79,6 +90,19 @@
   height: 176px;
   margin: -88px 0 0 -297px;
   color: rgb(var(--remote-ink));
+}
+
+/* Grown to show the queue (RemoteQueue.css): the card keeps to the edge away from it. At the
+   window's own height that is where it already is, so the side is set before the window grows. */
+.remote-window[data-queue='down'] .remote-card {
+  top: 4px;
+  margin-top: 0;
+}
+
+.remote-window[data-queue='up'] .remote-card {
+  top: auto;
+  bottom: 4px;
+  margin-top: 0;
 }
 
 /* Everything of the card in use, at the place and size it has always had. */
@@ -159,8 +183,11 @@
   background: linear-gradient(180deg, rgba(9, 9, 13, 0.46) 0%, rgba(9, 9, 13, 0.7) 100%);
 }
 
-/* Transparent: no card. A page in a transparent window cannot blur what is behind the window,
-   so the sleeve's type sits on a soft dark shade, and a dark base comes up for the card in use. */
+/* Transparent: no card. The idle type (in the sleeve or not) stands on what is behind the window
+   with only its own thin shadow, and a dark base comes up for the card in use. */
+
+/* The settings switch "text shade" (off by default). A page in a transparent window cannot blur
+   what is behind the window, so with it on the idle type sits on a soft dark shade. */
 .remote-cloud {
   position: absolute;
   border-radius: 26px;
@@ -181,7 +208,7 @@
   transition: opacity 320ms ease;
 }
 
-.remote-window[data-sleeve='false'] .remote-glass {
+.remote-window[data-idle='false'] .remote-glass {
   opacity: 1;
   transition: opacity 140ms ease-out;
 }
@@ -190,27 +217,29 @@
   opacity: 0;
 }
 
-.remote-window[data-sleeve='false'] .remote-cloud {
+.remote-window[data-idle='false'] .remote-cloud {
   opacity: 0;
   transition: opacity 140ms ease-out;
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'] {
+.remote-window[data-bg='transparent'][data-idle='true'] {
   --remote-unsung: rgba(255, 255, 255, 0.62);
   --remote-second: rgba(255, 255, 255, 0.9);
   --remote-next: rgba(255, 255, 255, 0.62);
+  --remote-upcoming: rgba(255, 255, 255, 0.78);
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'][data-paused='true'] {
+.remote-window[data-bg='transparent'][data-idle='true'][data-paused='true'] {
   --remote-sung: rgba(255, 255, 255, 0.78);
   --remote-unsung: rgba(255, 255, 255, 0.5);
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'] :is(
+.remote-window[data-bg='transparent'][data-idle='true'] :is(
   .remote-song,
   .remote-lyric__hero,
   .remote-lyric__roma,
   .remote-lyric__sub,
+  .remote-lyric__upcoming,
   .remote-transport
 ) {
   filter: drop-shadow(0 0 0.6px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
@@ -271,7 +300,8 @@
   border-radius: 48px;
   overflow: hidden;
   background: rgba(var(--remote-ink), 0.1);
-  transition: transform 300ms var(--remote-snap), border-radius 300ms var(--remote-snap);
+  transition: transform 300ms var(--remote-snap), border-radius 300ms var(--remote-snap),
+    box-shadow 300ms var(--remote-snap);
 }
 
 .remote-cover::after {
@@ -295,7 +325,8 @@
 .remote-window[data-sleeve='true'] .remote-cover {
   transform: none;
   border-radius: 18px 0 0 18px;
-  transition: transform 560ms var(--remote-settle) 60ms, border-radius 560ms var(--remote-settle) 60ms;
+  transition: transform 560ms var(--remote-settle) 60ms, border-radius 560ms var(--remote-settle) 60ms,
+    box-shadow 560ms var(--remote-settle) 60ms;
 }
 
 .remote-window[data-sleeve='true'] .remote-cover::after {
@@ -303,13 +334,16 @@
   transition: box-shadow 560ms var(--remote-settle) 60ms;
 }
 
-/* No card around it in the sleeve: rounded all round, and lifted off what is behind the window. */
+/* No card around it: lifted off what is behind the window. */
 .remote-window[data-bg='transparent'] .remote-cover {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
 }
 
+/* In the sleeve rounded all round. The window leaves it 4 px, which would cut that shadow square,
+   so it keeps only the type's thin shadow (on .remote-song). */
 .remote-window[data-bg='transparent'][data-sleeve='true'] .remote-cover {
   border-radius: 18px;
+  box-shadow: none;
 }
 
 .remote-cover__face,
@@ -365,6 +399,17 @@
 
 .remote-window[data-notitle='true'] .remote-song__line {
   width: 345px;
+}
+
+/* The four tools top right start at x 302 while lit: the song stops short of them, and takes the room
+   back at the pace of the keys lighting up. */
+.remote-window[data-lit='true'][data-notitle='false'] .remote-song__line {
+  width: 231px;
+}
+
+.remote-song[data-mode='line'] .remote-song__line {
+  transition: opacity 220ms ease 140ms, transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 220ms var(--remote-snap);
 }
 
 .remote-song__card {
@@ -438,11 +483,11 @@
   color: rgba(var(--remote-ink), 0.46);
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'] .remote-song__title {
+.remote-window[data-bg='transparent'][data-idle='true'] .remote-song__title {
   color: #fff;
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'] .remote-song__artist {
+.remote-window[data-bg='transparent'][data-idle='true'] .remote-song__artist {
   color: rgba(255, 255, 255, 0.78);
 }
 
@@ -514,7 +559,7 @@
 }
 
 /* With no card behind it the dimmed line needs the paused line's strength to stay readable. */
-.remote-window[data-bg='transparent'][data-sleeve='true'] .remote-lyric__pair[data-dim='true'] {
+.remote-window[data-bg='transparent'][data-idle='true'] .remote-lyric__pair[data-dim='true'] {
   --remote-sung: rgba(255, 255, 255, 0.78);
   --remote-unsung: rgba(255, 255, 255, 0.5);
 }
@@ -565,7 +610,11 @@
   padding-bottom: 2px;
 }
 
-.remote-lyric__word[data-fill='part'] {
+/* Every piece is painted the same way, sung, unsung or in between: text drawn as a clip of its
+   background is smoothed otherwise than text drawn in a colour, so a piece that changed between the
+   two at the start and the end of its fill looked a little different there. */
+.remote-lyric__word,
+.remote-lyric__gap {
   color: transparent;
   background-image: linear-gradient(
     90deg,
@@ -576,8 +625,6 @@
   background-clip: text;
 }
 
-.remote-lyric__word[data-fill='full'],
-.remote-lyric__gap[data-fill='full'],
 .remote-lyric__whole {
   color: var(--remote-sung);
 }
@@ -595,7 +642,7 @@
   color: rgba(var(--remote-ink), 0.44);
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'] .remote-lyric__roma {
+.remote-window[data-bg='transparent'][data-idle='true'] .remote-lyric__roma {
   color: rgba(255, 255, 255, 0.8);
 }
 
@@ -621,6 +668,44 @@
 }
 
 .remote-lyric__sub[data-kind='next'] {
+  color: var(--remote-next);
+}
+
+/* The second pair: the next line at the bottom right of the idle block (its top is set inline so it
+   ends at y 150), across from the line being sung. In use the keys hold that room, so it waits for idle. */
+.remote-lyric__upcoming {
+  position: absolute;
+  right: 0;
+  max-width: 100%;
+  text-align: right;
+  opacity: 0;
+  transition: opacity 180ms ease-out;
+}
+
+.remote-window[data-idle='true'] .remote-lyric__upcoming {
+  opacity: 1;
+  transition: opacity 320ms ease 260ms;
+}
+
+.remote-lyric__upcoming-main,
+.remote-lyric__upcoming-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-lyric__upcoming-main {
+  margin-top: 6px;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  color: var(--remote-upcoming);
+}
+
+.remote-lyric__upcoming-sub {
+  font-size: 12px;
+  line-height: 16px;
   color: var(--remote-next);
 }
 
@@ -761,12 +846,12 @@
   transition: background-color 140ms ease-out;
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'] .remote-line__track {
+.remote-window[data-bg='transparent'][data-idle='true'] .remote-line__track {
   background: rgba(255, 255, 255, 0.4);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.38), 0 1px 5px rgba(0, 0, 0, 0.45);
 }
 
-.remote-window[data-bg='transparent'][data-sleeve='true'] .remote-line__fill {
+.remote-window[data-bg='transparent'][data-idle='true'] .remote-line__fill {
   background: #fff;
 }
 

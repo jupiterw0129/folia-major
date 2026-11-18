@@ -64,6 +64,42 @@ describe('KuGou Web transport', () => {
         );
     });
 
+    it('keeps the Electron account hint when a public playlist answers with its creator\'s userid (#1101)', async () => {
+        storage.set('online_provider:kugou:userid', 'user-a');
+        const kugouRequest = vi.fn(async (operation: string) => (operation === 'user_detail'
+            ? { data: { nickname: 'A', userid: 'user-a2' } }
+            : { data: { userid: 'user-b', name: 'B list' } }));
+        vi.stubGlobal('window', { electron: { kugouRequest } });
+        const { requestKugou } = await import('@/services/onlineMusic/kugou/kugouTransport');
+
+        await requestKugou('playlist_detail', { ids: 'list' });
+        expect(storage.get('online_provider:kugou:userid')).toBe('user-a');
+        await requestKugou('login_qr_check', { key: 'qr' });
+        expect(storage.get('online_provider:kugou:userid')).toBe('user-a');
+        // The profile answer carries the session's own account id (the bridge writes it in).
+        await requestKugou('user_detail', {});
+        expect(storage.get('online_provider:kugou:userid')).toBe('user-a2');
+    });
+
+    it('keeps the Web account when a public playlist answers with its creator\'s userid (#1101)', async () => {
+        vi.stubGlobal('window', undefined);
+        storage.set('online_provider:kugou:token', 'token-a');
+        storage.set('online_provider:kugou:userid', 'user-a');
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(Response.json({ data: { userid: 'user-b', token: 'token-b', name: 'B list' }, cookie: ['userid=user-b', 'token=token-b', 'kg_mid=mid'] }))
+            .mockResolvedValueOnce(Response.json({ data: { status: 4, token: 'token-x' } }));
+        vi.stubGlobal('fetch', fetchMock);
+        storage.set('online_provider:kugou:dfid', 'device');
+        const { requestKugou } = await import('@/services/onlineMusic/kugou/kugouTransport');
+
+        await requestKugou('playlist_detail', { ids: 'list' });
+        await requestKugou('login_qr_check', { key: 'qr' });
+
+        expect(storage.get('online_provider:kugou:token')).toBe('token-a');
+        expect(storage.get('online_provider:kugou:userid')).toBe('user-a');
+        expect(storage.get('online_provider:kugou:cookie')).toBe('kg_mid=mid');
+    });
+
     it('registers a fresh dfid and retries when an audio URL request requires verification', async () => {
         vi.stubGlobal('window', undefined);
         const { requestKugou } = await import('@/services/onlineMusic/kugou/kugouTransport');
@@ -305,6 +341,15 @@ describe('KuGou Web transport', () => {
             code: 'auth-required',
             providerId: 'kugou',
         });
+    });
+
+    it('answers a stored session the main process cannot load now as unavailable, not as a logout signal', async () => {
+        const ipcError = new Error("Error invoking remote method 'kugou-api-request': KuGouApiError: "
+            + 'KuGouApi[operation=user_detail session=unreadable]: The stored KuGou session cannot be read now');
+        vi.stubGlobal('window', { electron: { kugouRequest: vi.fn().mockRejectedValue(ipcError) } });
+        const { requestKugou } = await import('@/services/onlineMusic/kugou/kugouTransport');
+
+        await expect(requestKugou('user_detail', {})).rejects.toMatchObject({ code: 'unavailable', providerId: 'kugou' });
     });
 
     it('classifies a raw answer-object rejection from an unpatched main process', async () => {

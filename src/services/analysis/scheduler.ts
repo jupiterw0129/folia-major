@@ -34,8 +34,9 @@
 // The frames waited are watched too, with no unit running (found by review): a picture that drops
 // frames then as well drops them on its own (a heavy picture, a 60 fps picture on a 120 Hz display,
 // a hitch), and waiting does nothing for it - back to back again. So is a wait no frame ended (a
-// minimised or covered window, which Electron's backgroundThrottling: false keeps "visible"), and a
-// unit no frame was drawn under: there is no picture to yield to. The frames waited count in a
+// minimised or covered window, which Electron's backgroundThrottling: false keeps "visible"; with
+// 后台节流 switched on, a hidden one that draws nothing), and a unit no frame was drawn under: there is
+// no picture to yield to. The frames waited count in a
 // task's estimated finish.
 
 export type Urgency = 'transition' | 'onScreen' | 'background';
@@ -72,6 +73,8 @@ export interface SchedulerOptions {
     /** Frame gaps (ms) while a unit runs, from `watchFrames`; absent in tests and off the renderer. */
     frames?: FrameWatch | null;
     log?: (line: string) => void;
+    /** Told when a unit starts (true) and ends (false): gpuActivity.ts, for visualizers that adapt to frame time. */
+    onUnit?: (active: boolean) => void;
 }
 
 /** A unit's or a load's time, before any has been measured: rough M4 figures, replaced by the first measurement. */
@@ -109,7 +112,7 @@ export interface Scheduler {
 
 const hasDeadline = (request: UnitRequest<unknown>) => request.deadline !== undefined && Number.isFinite(request.deadline);
 
-export const createScheduler = ({ now = () => performance.now(), isLoaded = () => true, frames = null, log = line => console.info(line) }: SchedulerOptions = {}): Scheduler => {
+export const createScheduler = ({ now = () => performance.now(), isLoaded = () => true, frames = null, log = line => console.info(line), onUnit }: SchedulerOptions = {}): Scheduler => {
     const queue: Entry[] = [];
     const averages = new Map<string, number>();
     const loads = new Map<string, number>();
@@ -216,6 +219,7 @@ export const createScheduler = ({ now = () => performance.now(), isLoaded = () =
         running = { kind: request.kind, started };
         loadedDuringUnit = 0;
         frames?.begin();
+        onUnit?.(true);
         // Measured before the caller hears back, so whatever it asks next is estimated with this unit in.
         const finish = (answered: boolean) => {
             const took = now() - started - loadedDuringUnit;
@@ -238,6 +242,7 @@ export const createScheduler = ({ now = () => performance.now(), isLoaded = () =
             }
             running = null;
             busy = false;
+            onUnit?.(false);
         };
         let pending: Promise<unknown>;
         try {
@@ -253,7 +258,8 @@ export const createScheduler = ({ now = () => performance.now(), isLoaded = () =
         // review): a task that goes on submits its next unit only after a few awaits of its own, so
         // picked at once, the queue held only the other task's units and two tasks took strict turns,
         // whatever their deadlines and urgencies. The main window is not throttled
-        // (backgroundThrottling: false).
+        // (backgroundThrottling: false) unless 后台节流 is on; then, hidden and silent, it pumps at
+        // Chromium's background timer rate, which is what that switch asks for.
         ).finally(() => { setTimeout(pump, 0); });
     };
 

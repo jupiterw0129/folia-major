@@ -6,6 +6,7 @@ import { useLatticeSettingsStore } from '../../stores/useLatticeSettingsStore';
 import { openCommandPalette } from '../../stores/useAppViewStore';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { usePlayerBottomBarBottomPx } from '../../hooks/usePlayerBottomBarBottomPx';
+import { holdCompanionHover, releaseCompanionHover, useBottomDockStore, useIsDockCompactWithCapsule } from '../../stores/useBottomDockStore';
 import { SlideActionButton } from '../shared/SlideActionButton';
 import { WallToolsQuickRow, WallToolsRow, type WallToolsEntry, type WallToolsQuickAction } from './WallToolsRows';
 import { useWallToolsCommonActions } from './useWallToolsCommonActions';
@@ -18,8 +19,8 @@ import './WallToolsButton.css';
 // 面板从上到下：一排纯图标快捷格 → 音量 → 墙自己的条目 → 海报叠色 → 开灯 / 关灯与帮助。
 // 两面墙结构一致，只有和场景有关的部分由使用方传入：按钮上方的定位按钮（above）、快捷排里的 destination
 // （bravais 前往 Lattice、Lattice 回到首页）、自己的条目（bravais 的「墙面外观」与透光、Lattice 的「墙面」与切歌自动聚焦）
-// 和帮助内容。洗牌、主题、队列、播放器四格与音量滑条是公共部分，由 useWallToolsCommonActions 从宿主（wallToolsHost）组装；
-// 快捷格的固定顺序是 shuffle-queue / generate-theme / queue / destination / open-player，缺的跳过。
+// 和帮助内容。洗牌、主题、队列、播放器、设置五格与音量滑条是公共部分，由 useWallToolsCommonActions 从宿主（wallToolsHost）组装；
+// 快捷格的固定顺序是 shuffle-queue / generate-theme / queue / destination / open-player / open-settings，缺的跳过。
 // 面板与队列浮岛（WallToolsQueueIsland，由快捷排的「队列」格开合、偏好记在 useLatticeSettingsStore）都放在
 // .lattice-tools-stack 里、都在 rootRef 之内：点外部关闭天然把浮岛算作「里面」。stack 是 column-reverse：DOM 里面板在前、
 // 浮岛在后（Tab 顺序面板 → 浮岛 → 按钮），视觉上浮岛在面板上方。浮岛只在面板打开、偏好展开、有宿主且不在私人 FM 时显示；
@@ -41,7 +42,7 @@ export type WallToolsButtonProps = {
     /** 按钮的 title 与面板的可访问名。 */
     label: string;
     isDaylight: boolean;
-    /** 快捷排倒数第二格：这面墙的去处（bravais 是 open-lattice，Lattice 是 go-home）；不给时没有这一格。 */
+    /** 快捷排第四格（播放器、设置之前）：这面墙的去处（bravais 是 open-lattice，Lattice 是 go-home）；不给时没有这一格。 */
     destination?: WallToolsQuickSlot;
     /** 音量下面那几行（墙自己的条目）；给函数时只在面板打开着渲染时求值（条目的可用性随时变）。 */
     entries: readonly WallToolsEntry[] | (() => readonly WallToolsEntry[]);
@@ -93,6 +94,20 @@ export function WallToolsSurface({ idPrefix, label, isDaylight, destination, ent
     const handleToggleLatticePosterTint = useLatticeSettingsStore(state => state.handleToggleLatticePosterTint);
     const isWideLayout = useMediaQuery('(min-width: 640px)');
     const bottomPx = usePlayerBottomBarBottomPx(isWideLayout ? 24 : 16);
+    // 紧凑档（窗口窄于 960，progress-bar v3）：按钮挂到进度条胶囊的右端（bottomDock.css 平移根节点，面板与浮岛跟着走），
+    // 上方那颗定位按钮不画，定位改由胶囊左端的封面按（Lattice / bravais 把定位动作登记进 useBottomDockStore）。
+    const isDocked = useIsDockCompactWithCapsule();
+    useEffect(() => {
+        useBottomDockStore.getState().setCompanion(`wall-tools:${idPrefix}`, true);
+        return () => {
+            useBottomDockStore.getState().setCompanion(`wall-tools:${idPrefix}`, false);
+            releaseCompanionHover(true);
+        };
+    }, [idPrefix]);
+    useEffect(() => {
+        useBottomDockStore.getState().setCompanionOpen('wall-tools', isOpen);
+        return () => useBottomDockStore.getState().setCompanionOpen('wall-tools', false);
+    }, [isOpen]);
     // stack 的 max-height 要减掉按钮此刻的底距（随底栏抬升量变），经 CSS 变量交给样式。
     const bottomVar = useTransform(bottomPx, value => `${value}px`);
     const host = useWallToolsHost();
@@ -141,9 +156,9 @@ export function WallToolsSurface({ idPrefix, label, isDaylight, destination, ent
     const common = useWallToolsCommonActions({ queueIslandId });
     const showQueueIsland = isOpen && common.queueIslandShown && host !== null;
     const rows = isOpen ? (typeof entries === 'function' ? entries() : entries) : [];
-    // 快捷排的固定顺序：洗牌、主题、队列、去处、播放器；缺的跳过。
+    // 快捷排的固定顺序：洗牌、主题、队列、去处、播放器、设置；缺的跳过。
     const quick: WallToolsQuickAction[] = isOpen
-        ? [common.shuffle, common.theme, common.queue, resolveSlot(destination), common.openPlayer]
+        ? [common.shuffle, common.theme, common.queue, resolveSlot(destination), common.openPlayer, common.settings]
             .filter((action): action is WallToolsQuickAction => action !== null)
         : [];
     // 叠色开关两边都有（颜色与强度的细调仍在设置页与命令面板）。
@@ -160,7 +175,10 @@ export function WallToolsSurface({ idPrefix, label, isDaylight, destination, ent
         <motion.div
             ref={rootRef}
             style={{ bottom: bottomPx, '--wall-tools-bottom': bottomVar } as unknown as MotionStyle}
-            className={`lattice-tools group ${above ? 'has-above' : ''} ${isDaylight ? 'is-daylight' : ''}`}
+            className={`lattice-tools group dock-companion dock-companion--wall-tools ${isDocked ? 'is-docked' : ''} ${above && !isDocked ? 'has-above' : ''} ${isDaylight ? 'is-daylight' : ''}`}
+            // 挂在胶囊上时鼠标停在这里胶囊也算悬停；只认鼠标和笔，手指点完补发的 mouseenter 不算。
+            onPointerEnter={(event) => { if (isDocked && event.pointerType !== 'touch') holdCompanionHover(); }}
+            onPointerLeave={(event) => { if (event.pointerType !== 'touch') releaseCompanionHover(); }}
         >
             {/* 面板与队列浮岛叠在按钮上方的一列里（column-reverse：面板在下、浮岛在上）：定位在 stack 上，面板自己不再 absolute。 */}
             <div className={showQueueIsland ? 'lattice-tools-stack has-queue-island' : 'lattice-tools-stack'}>
@@ -225,12 +243,13 @@ export function WallToolsSurface({ idPrefix, label, isDaylight, destination, ent
                     )}
                 </AnimatePresence>
                 <AnimatePresence initial={false}>
-                    {showQueueIsland && <WallToolsQueueIsland key="queue-island" id={queueIslandId} host={host} trailsPanel={islandTrailsPanel} />}
+                    {showQueueIsland && <WallToolsQueueIsland key="queue-island" id={queueIslandId} host={host} trailsPanel={islandTrailsPanel} onClosePanel={close} />}
                 </AnimatePresence>
             </div>
 
-            {above}
+            {!isDocked && above}
             <SlideActionButton
+                docked={isDocked}
                 icon={isOpen ? X : Settings2}
                 title={label}
                 onActivate={() => {

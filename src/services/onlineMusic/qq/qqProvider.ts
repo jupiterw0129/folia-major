@@ -18,19 +18,21 @@ import { createProviderSongMetadata } from '../../../utils/songMetadata';
 import { toSafePlaybackUrl } from '../../../utils/appPlaybackHelpers';
 import { fetchQQLyrics } from './qqLyricProvider';
 import { writeProviderSessionValue } from '../providerStorage';
-import { normalizeQqCollection, normalizeQqSong, normalizeQqUser } from './qqNormalize';
-import { clearQqSession, getQqRemoteApiBase, getQqTransportAvailability, hasQqSession, requestQq } from './qqTransport';
+import { getQqLyricSearchAlias, normalizeQqCollection, normalizeQqSong, normalizeQqUser } from './qqNormalize';
+import { clearQqSession, getQqRemoteApiBase, getQqTransportAvailability, hasQqSession, hasUsableQqSession, isQqSessionParked, requestQq } from './qqTransport';
 import { canRunLoginSelfCheck, runLoginSelfCheck } from '../loginSelfCheck';
 import { diagnosticLine, formatDiagnosticClock } from '../login/loginDiagnosticReport';
 import { collectQqLoginDiagnostics } from './qqLoginDiagnostics';
-import { getQqSongDetail, requestQqSongDetail } from './qqSongDetail';
+import { getQqSongDetailById, getQqSongDetails, QQ_SONG_DETAILS_PER_REQUEST, requestQqSongDetail } from './qqSongDetail';
 import { qqRecommendations } from './qqRecommendations';
-import { searchQqSongs } from './qqSearch';
+import { clearQqGuessYouLikeCatalog } from './qqGuessYouLike';
+import { resetQqSearchFallbackMemory, searchQqCollections, searchQqSongs } from './qqSearch';
 import { getQqSubscriptionStatus, qqMutations } from './qqMutations';
 import { describeQqLoginFailure, qqAccountHintNote, qqCheckFailure, qqHintFailure } from './qqLoginFailure';
 import { describeQqFailure } from './qqFailure';
 import { getQqCloudCollection, getQqCloudTracks, getQqListTracks, qqListKindOf } from './qqLists';
 import { qqExplore } from './qqExplore';
+import { getQqListeningRankCollections, getQqListeningRankTracks } from './qqListeningRank';
 import { areQqSongsLiked, resetQqVipMemory, withQqVipType } from './qqAccount';
 import { requestQqPreviewSource } from './qqPreview';
 import { noteQqBackendDeclaration, qqBackendSessionMode, resetQqBackendDeclaration } from './qqBackendDeclaration';
@@ -116,13 +118,17 @@ const loadRawPlaylistTracks = async (
 // 后端有没有 `/user/playlist-detail` 只取决于它的版本，一个会话里不会变，所以探到一次 404
 // 就记下来，不再为每一页重试。刷新页面自然会重新探测。
 let ownedPlaylistRouteMissing = false;
+let lastQqAccountId: string | null = null;
 
 export const resetQqProviderRuntimeCache = (): void => {
     ownedPlaylistRouteMissing = false;
+    lastQqAccountId = null;
     lastLoginStatusCheck = null;
     playlistRound = null;
     resetQqVipMemory();
     resetQqSessionRefresh();
+    resetQqSearchFallbackMemory();
+    clearQqGuessYouLikeCatalog();
 };
 
 /**
@@ -455,14 +461,15 @@ const getAudioSource = async (song: SongResult, quality: AudioQualityPreference)
     if (firstUnreachable !== undefined && !standardTierEmpty) throw firstUnreachable;
     // 没有一档回过空链接：照第一次的失败报，和以前一样。
     if (firstFailure !== undefined && !sawEmptyPlayLink) throw firstFailure;
-    // 有会话、所有音质都没给链接：这个账号可能只能听试听片段，不限后端说的可能原因。没会话时后端不给试听。
-    if (sawEmptyPlayLink && hasQqSession()) {
+    // 有会话、所有音质都没给链接：这个账号可能只能听试听片段，不限后端说的可能原因。没会话时后端不给试听，停用的会话也不带
+    // （hasUsableQqSession）。
+    if (sawEmptyPlayLink && hasUsableQqSession()) {
         const preview = await requestQqPreviewSource(songmid, mediaId);
         if (preview) return preview;
     }
     // 没有会话、而后端只是没给链接：登录后可能能放（只是可能，不能当成登录失效）。形态坏掉的回答不是没给链接。
     throw new OnlineProviderError('not-playable', 'QQMusicApi gave no play link for this song', 'qq', {
-        likelyCause: likelyCause ?? (sawEmptyPlayLink && !hasQqSession() ? 'sign-in' : undefined),
+        likelyCause: likelyCause ?? (sawEmptyPlayLink && !hasUsableQqSession() ? 'sign-in' : undefined),
     });
 };
 
@@ -490,6 +497,16 @@ const noteLoginStatusCheck = (summary: LoginDiagnosticLine): void => {
     lastLoginStatusCheck = diagnosticLine`${formatDiagnosticClock(Date.now())} ${summary}`;
 };
 
+// 后端不认这个 session 就是登录没了，只有一种例外：主进程这次启动没能读出加密的登录仓库，这次运行里也还没有新登录替掉它，
+// 存着的 session 就是停用的（isQqSessionParked），请求没带它。那时是「查不到」：报 unavailable，accountRead 只记这次读失败、留着
+// session；回 null 会让它删掉 session，下次能读出仓库时也找不回来。这次运行里扫码登录过，后端不认了就照常是登录没了。
+const signedOutUnlessStoreUnreadable = async (): Promise<null> => {
+    if (!await isQqSessionParked()) return null;
+    noteLoginStatusCheck(diagnosticLine`login_status: the sign-in store could not be read at this start`);
+    console.warn('[QQProvider] login-status:store-unreadable');
+    throw new OnlineProviderError('unavailable', 'QQ sign-in store could not be read at this start', 'qq');
+};
+
 const getLoginStatus = async (): Promise<ProviderUser | null> => {
     // No opaque backend session means the account cannot be authenticated, so the startup request is skipped.
     if (!hasQqSession()) {
@@ -503,10 +520,14 @@ const getLoginStatus = async (): Promise<ProviderUser | null> => {
         if (!profile) {
             noteLoginStatusCheck(diagnosticLine`login_status: the backend does not recognize the stored session`);
             console.info('[QQProvider] login-status:anonymous');
-            return null;
+            return signedOutUnlessStoreUnreadable();
         }
-        const user = await withQqVipType(normalizeQqUser(profile));
-        // 登录还在：Serverless 后端的会话要在到期前续（qqSessionRefresh.ts），先等通道探测说出会话存法。
+        const normalized = normalizeQqUser(profile);
+        const accountId = String(normalized.id || '');
+        if (lastQqAccountId && accountId && lastQqAccountId !== accountId) clearQqGuessYouLikeCatalog();
+        lastQqAccountId = accountId || null;
+        const user = await withQqVipType(normalized);
+        // 登录还在：会话要在到期前续（qqSessionRefresh.ts）；续期的请求排在通道探测之后。
         void refreshDeclaredChannels().then(keepQqSessionFresh);
         // The acceptance test account returned a profile without a display name, so the profile itself is the signal.
         noteLoginStatusCheck(diagnosticLine`signed in (user id ${user.id ? 'present' : 'missing'}, nickname ${user.nickname ? 'present' : 'missing'})`);
@@ -520,7 +541,7 @@ const getLoginStatus = async (): Promise<ProviderUser | null> => {
         // Missing, expired, rejected, or non-persisted backend sessions all arrive as 401.
         if (error instanceof OnlineProviderError && error.code === 'auth-required') {
             console.info('[QQProvider] login-status:auth-required');
-            return null;
+            return signedOutUnlessStoreUnreadable();
         }
         console.warn('[QQProvider] login-status:error', error);
         throw error;
@@ -530,6 +551,8 @@ const getLoginStatus = async (): Promise<ProviderUser | null> => {
 // The request takes the session as it is when it is made (`requestQq`); the session leaves the
 // page at once, before the first wait and whatever the backend answers.
 const logout = async (): Promise<void> => {
+    clearQqGuessYouLikeCatalog();
+    lastQqAccountId = null;
     stopQqSessionRefresh();
     const told = hasQqSession()
         ? requestQq('logout').catch(error => {
@@ -740,6 +763,8 @@ const checkLogin = async (key: string): Promise<LoginState> => {
         return { state: 'scanned' };
     }
     if (code === 803) {
+        clearQqGuessYouLikeCatalog();
+        lastQqAccountId = null;
         // Idempotent with the transport, which already stored the opaque session string on this response.
         if (typeof response?.cookie === 'string' && response.cookie) {
             writeProviderSessionValue('qq', 'cookie', response.cookie);
@@ -1025,6 +1050,7 @@ export const qqProvider: OnlineMusicProvider = {
     id: 'qq',
     displayName: 'QQ Music',
     shortName: 'QQ音乐',
+    shortNameKey: 'onlineProviderName.qq',
     mark: { letter: 'Q', color: '#16a34a' },
     getAvailability,
     describeFailure: describeQqFailure,
@@ -1039,6 +1065,8 @@ export const qqProvider: OnlineMusicProvider = {
         artists: true,
         // 推荐、歌单增删与收藏歌单是 qq-music-api 3.3.0 的路由，红心与收藏专辑是 3.3.1 的。
         recommendations: true,
+        // 每日 30 首的历史日期是 qq-music-api 3.3.6 的路由；旧后端 404，看到的只是没有日期。
+        historyRecommendations: true,
         mutations: true,
         playlistTrackMutations: true,
         playlistSubscription: true,
@@ -1048,6 +1076,10 @@ export const qqProvider: OnlineMusicProvider = {
         // 音乐云盘与探索页是 qq-music-api 3.3.3 的路由。
         userCloud: true,
         explore: true,
+        // 听歌排行是 qq-music-api 3.3.6 的路由；旧后端 404，看到的只是没有排行条目。
+        listeningRank: true,
+        // 账号的音乐偏好是 qq-music-api 3.3.6 的路由；旧后端 404，偏好面板显示没读到。
+        recommendationPreferences: true,
     },
     normalizeSong: normalizeQqSong,
     normalizeUser: normalizeQqUser,
@@ -1063,9 +1095,13 @@ export const qqProvider: OnlineMusicProvider = {
         const songmid = String(song.qqMid || sourceRef?.providerData?.songMid || '').trim();
         return songmid ? `https://y.qq.com/n/ryqq/songDetail/${encodeURIComponent(songmid)}` : null;
     },
-    search: { searchSongs: searchQqSongs },
-    playback: { getSongDetail: getQqSongDetail, getAudioSource },
-    lyrics: { getLyrics },
+    search: {
+        searchSongs: searchQqSongs,
+        searchAlbums: (query, limit, offset) => searchQqCollections('album', query, limit, offset),
+        searchPlaylists: (query, limit, offset) => searchQqCollections('playlist', query, limit, offset),
+    },
+    playback: { getSongDetail: getQqSongDetailById, getSongDetails: getQqSongDetails, songDetailsPerRequest: QQ_SONG_DETAILS_PER_REQUEST, getAudioSource },
+    lyrics: { getLyrics, getSearchAlias: getQqLyricSearchAlias },
     auth: {
         getLoginTexts: () => ({
             // 和 caseNotes 一样，到窗口真的要显示时才看这一次登录解析出的方式：只给 QQ 音乐 App 扫码时说三种 App 都能扫，
@@ -1151,6 +1187,7 @@ export const qqProvider: OnlineMusicProvider = {
         getLikedSongCount,
         areSongsLiked: areQqSongsLiked,
         getCloudCollection: getQqCloudCollection,
+        getListeningRankCollections: getQqListeningRankCollections,
     },
     catalog: {
         // 只要拿得到 songmid 就补得回 mid，所以能否导航等同于这首歌是不是 QQ 的歌。
@@ -1159,6 +1196,7 @@ export const qqProvider: OnlineMusicProvider = {
         getPlaylistTracks,
         getPlaylistDetail,
         getCloudTracks: (limit, offset) => getQqCloudTracks(limit, offset),
+        getListeningRankTracks: (range, limit, offset) => getQqListeningRankTracks(range, limit, offset),
         getAlbumDetail,
         getAlbumTracks,
         getArtistDetail,

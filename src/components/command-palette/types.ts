@@ -1,7 +1,8 @@
 import type React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import type { SearchReturnView, SearchSource } from '../../stores/useSearchNavigationStore';
+import type { SearchKind, SearchReturnView, SearchSource } from '../../stores/useSearchNavigationStore';
 import type { LocalLibraryDisplayCatalog } from '../../services/playbackAdapters';
+import type { NebbiaBehind, NebbiaGlass } from '../visualizer/nebbia/types';
 import type { HomeViewTab, LatentBackgroundTuning, LocalSong, LyricData, PlayerState, ReplayGainMode, SongResult, StatusMessage, SubtitleContentMode, VisualizerMode, VisualizerBackgroundMode, MonetBackgroundTuning, SmartBeatMode } from '../../types';
 import type { LyricSegmentationRecord, LyricSegmentationSource } from '../../types/lyricSegmentation';
 import type { AppLanguagePreference } from '../../i18n/config';
@@ -17,15 +18,19 @@ import type { LyricStaffAbsorbMode, LyricStaffPolicy } from '../../utils/lyrics/
 import type { AudioEqualizerModeId } from '../../utils/audioEqualizer';
 import type { ThemeGenerationSource } from '../../services/themePreferences';
 import type { TransitionMode } from '../../services/automix/transitionStrategy';
+import type { PersonalFmCatalog } from '../../types/personalFm';
 import type { PersonalFmSelection } from '../../services/onlineMusic/fmModes';
 import type { QueueBatchAction, QueueFacetKind } from './queueQuery';
 import type { CommandPlatform } from './availability';
 import type { CommandPaletteSurface } from './surfaces/types';
 import type { CommandSyntaxSpec } from './syntax/types';
 import type { PlaybackEntryView } from '../../stores/usePlaybackEntryViewStore';
+import type { GpuPreference } from '../../stores/useDesktopSettingsStore';
 import type { PonderHintVisibility } from '../../types/ponder';
 import type { LibraryWallLook } from '../../utils/libraryWallLook';
 import type { LibraryWallSeamStyle } from '../../utils/libraryWallSeamStyle';
+import type { LibraryWallSeamDirection } from '../../utils/libraryWallSeamDirection';
+import type { HifiInstallResult, HifiRuntimeStatus } from '../../types/hifi';
 
 // src/components/command-palette/types.ts
 // Shared command palette contracts used by the registry, hook, and UI shell.
@@ -54,6 +59,11 @@ export type CommandPaletteCommand = {
     icon?: LucideIcon;
     keywords: string[];
     placeholder?: (context: CommandPaletteContext) => string;
+    /**
+     * While this command is open, the name its chip shows in place of the title: a command whose surface
+     * changes its subject (the FM radio on air) names it the way the surface does.
+     */
+    activeTitle?: (context: CommandPaletteContext) => string;
     requiresInput?: boolean;
     /** Environment gating: which platforms ship this feature at all. */
     platform?: CommandPlatform[];
@@ -93,6 +103,13 @@ export type CommandPaletteCommand = {
     settingsTarget?: { subview: SettingsSubviewId; anchorId?: SettingsAnchorId };
     /** Successful execution closes the palette unless the command opts out. */
     closeAfterExecute?: boolean;
+    /**
+     * Offered in the row that floats above the player bar. Only for things done to what is playing
+     * right now (like, shuffle, volume, the lyric style…), never settings or navigation: the row is
+     * not the palette's frequent list. The command declares it itself, so there is no list to keep.
+     * 'mouse-only' leaves it out of the row a finger opens (volume: a phone has its own volume keys).
+     */
+    capsuleAction?: boolean | 'mouse-only';
     execute: (input: string, context: CommandPaletteContext) => Promise<boolean> | boolean;
 };
 
@@ -133,6 +150,7 @@ export type CommandPaletteSearchContext = {
     submitSearch: (args: {
         query?: string;
         sourceTab: SearchSource;
+        kind?: SearchKind;
         deps: {
             localSongs: LocalSong[];
             localLibraryCatalog?: LocalLibraryDisplayCatalog;
@@ -140,6 +158,8 @@ export type CommandPaletteSearchContext = {
         };
         returnView?: SearchReturnView;
     }) => Promise<boolean>;
+    /** 搜过的词，最近的在前（useSearchNavigationStore 的 searchHistory）；搜索命令把它们列在输入行下面。 */
+    searchHistory: () => readonly string[];
 };
 
 export type CommandPalettePlaybackContext = {
@@ -167,9 +187,13 @@ export type CommandPalettePlaybackContext = {
     /** Personal FM owns the queue while it is on air; queue commands stand down. */
     isFmMode: boolean;
     personalFmSelection: PersonalFmSelection;
+    personalFmCatalog?: PersonalFmCatalog;
     /** Only the providers that actually implement FM modes offer the picker. */
     isPersonalFmModeSupported: boolean;
+    /** The extra radio FM plays, if any: its modes come under a command of their own. */
+    personalFmStation?: string | null;
     setPersonalFmSelection: (selection: PersonalFmSelection) => Promise<void> | void;
+    isRecommendationPreferencesOffered: () => boolean;
     toggleMute: () => void;
     /**
      * The like/star action from the controls tab. It travels here rather than staying inside the
@@ -186,11 +210,29 @@ export type CommandPalettePlaybackContext = {
     canAddCurrentSongToPlaylist: boolean;
     openAudioEqualizer: () => void;
     applyAudioSoundPreset: (modeId: AudioEqualizerModeId) => void;
+    /**
+     * Whether a mod's equalizer curve is kept, playing or on hold (Folium 1.7 `folium.equalizer`).
+     *
+     * A function rather than a value because a mod puts a curve in place or takes it off with nothing
+     * re-rendering the app to say so: this context is memoised on the values it subscribes to, and the
+     * audio ones are only volume and mute. `isAvailable` is asked each time the palette opens, so a getter
+     * is read fresh.
+     */
+    hasModEqualizerCurve: () => boolean;
+    /** Takes a mod's equalizer curve off (or discards one on hold), back to the listener's own sound. */
+    releaseModEqualizerCurve: () => void;
     runAutoMatchBestLyric: () => Promise<boolean>;
     /** Marks or unmarks the current local song as instrumental (no automatic lyric matching). */
     toggleCurrentSongPureMusicMark: () => Promise<boolean>;
     /** Whether the current song is a local song, the only kind the instrumental mark applies to. */
     canToggleCurrentSongPureMusicMark: boolean;
+    /**
+     * Whether the current song plays through the HiFi engine (mpv) rather than the Web engine.
+     * A getter: the route changes with each song, and the context is not rebuilt for it.
+     */
+    isHifiRoute: () => boolean;
+    /** Opens the HiFi signal-path panel (the same one the badge by the progress bar opens). */
+    openHifiSignalPath: () => void;
 };
 
 export type CommandPaletteNavigationContext = {
@@ -251,6 +293,11 @@ export type CommandPaletteSettingsContext = {
      * A function, because switching suites while the palette is open has to close the wall-look commands off.
      */
     isLibraryWallLookAvailable: () => boolean;
+    /**
+     * Same predicate the settings rows only the grid reads show themselves with (library/app/gridLibraryActive):
+     * the *active* suite is the grid. A function, for the same reason as the one above.
+     */
+    isGridLibraryActive: () => boolean;
     /** bravais wall transparency (useLibraryWallLookStore); read live. Not part of appearance import / export. */
     libraryWallLook: () => LibraryWallLook;
     setLibraryWallLook: (look: LibraryWallLook) => void;
@@ -269,6 +316,9 @@ export type CommandPaletteSettingsContext = {
     /** Lyrics / blur on the visualizer that shows through the bravais wall: flip the stored values. */
     toggleLibraryWallBackdropLyrics: () => void;
     toggleLibraryWallBackdropBlur: () => void;
+    /** Which way the bravais info strip opens (useLibraryWallLookStore.seamDirection: auto / auto-reverse / vertical / horizontal); read live. */
+    libraryWallSeamDirection: () => LibraryWallSeamDirection;
+    setLibraryWallSeamDirection: (direction: LibraryWallSeamDirection) => void;
     ponderHintVisibility: PonderHintVisibility;
     setPonderHintVisibility: (visibility: PonderHintVisibility) => void;
     /** 触屏上那颗思索按钮显不显示。它是触屏唯一的入口，所以关掉是一个明确的选择。 */
@@ -282,6 +332,12 @@ export type CommandPaletteSettingsContext = {
     /** A getter: the full-bleed toggle it gates on flips with nothing re-rendering the context. */
     canUseGridViewSquareCards: () => boolean;
     toggleLatticeVignette: () => void;
+    /** Lattice 的墙面形态在海报墙和电台墙之间切换（useLatticeSettingsStore.latticeWallForm；私人 FM 下总是电台墙）。 */
+    toggleLatticeWallForm: () => void;
+    /** 普通队列的电台墙上，接下来的歌显示为问号卡（useLatticeSettingsStore.latticeRadioHideUpcoming）：翻转存着的值。 */
+    toggleLatticeRadioHideUpcoming: () => void;
+    /** Number only the playing song on the queue collage and the bravais wall (useLatticeSettingsStore.latticeBadgeCurrentOnly): flips the stored value. */
+    toggleLatticeBadgeCurrentOnly: () => void;
     /** Motion reduction for the queue collage, the surface issue #370 was filed about. */
     toggleReduceLatticeMotion: () => void;
     /** Whether the OS animation setting is allowed to reduce motion in the app at all. */
@@ -297,8 +353,11 @@ export type CommandPaletteSettingsContext = {
     setLatticePosterTintIntensity: (intensity: number) => void;
     toggleAlwaysShowTrackSwitchButtons: () => void;
     toggleAlwaysShowMainWindowTitlebar: () => void;
+    togglePlayerHeaderBlur: () => void;
+    toggleTitlebarSide: () => void;
     toggleHideFullscreenButton: () => void;
     toggleNativeMacFullscreenButton: () => void;
+    toggleNativeMacTrafficLights: () => void;
     toggleAutoHideCursorWithPlayerChrome: () => void;
     toggleHideCursorWhenIdle: () => void;
     /** Lab switch: whether the restored session starts playing by itself on launch. */
@@ -308,6 +367,7 @@ export type CommandPaletteSettingsContext = {
     togglePlaybackFade: () => void;
     /** Whether restricted songs and unknown failures count down to a skip, like taken-down ones. */
     toggleAutoSkipUnplayable: () => void;
+    toggleShuffleRoundNoRepeat: () => void;
     /**
      * Whether this build can watch the imported local folders at all. A getter because the answer
      * is a runtime API check (FileSystemObserver) rather than a stored value, and the settings
@@ -322,11 +382,16 @@ export type CommandPaletteSettingsContext = {
      */
     canReportPlayback: () => boolean;
     togglePlaybackReport: () => void;
+    /** 自动 AI 分词: segment songs with no saved split by themselves (issue #960). */
+    toggleAutoAiLyricSegmentation: () => void;
+    toggleKeepProviderWordTiming: () => void;
     voiceInputPauseSupported: boolean;
     /** Lab switch for the experimental mod system; gates the `mods` command. */
     modSystemEnabled: boolean;
     toggleVoiceInputPause: () => void;
     togglePreventDisplaySleepDuringPlayback: () => void;
+    /** 后台节流: throttle the window and hold the lyric animation while it is minimised or hidden (main process applies it). */
+    toggleBackgroundThrottling: () => void;
     toggleWallpaperMode: () => void;
     /** Close button hides the main window to the tray instead of quitting (main process owns it). */
     toggleCloseToTray: () => void;
@@ -334,12 +399,22 @@ export type CommandPaletteSettingsContext = {
     toggleHideRemoteControlTitlebar: () => void;
     /** Remote control window: when idle, expand the cover into the large sleeve. */
     toggleRemoteControlExpandCover: () => void;
+    /** Remote control window, transparent background: a soft dark shade under the idle type. */
+    toggleRemoteControlTextShade: () => void;
+    /** Remote control window: one lyric pair, or two (the next line at the bottom right when idle). */
+    toggleRemoteLyricPairs: () => void;
     /** Turns remote control click-through off (the way back into a click-through window). */
     unlockRemoteControl: () => void;
     /** OBS browser source: keep the main window's heavy animation while an OBS client is connected. */
     toggleObsKeepMainWindowAnimation: () => void;
+    /** The now playing card in the OBS browser source (local source and the web link alike). */
+    toggleTrackCardInObs: () => void;
     /** macOS-only: the wallpaper-mode Dock auto-hide override (on by default). */
     toggleWallpaperMacAutohideDock: () => void;
+    /** Windows-only: the saved render GPU choice, read when asked (it can change while the palette is open). */
+    gpuPreference: () => GpuPreference;
+    /** Saves the render GPU choice; the main process applies it on the next launch. */
+    setGpuPreference: (preference: GpuPreference) => void;
     sleepTimerEnabled: boolean;
     setSleepTimerEnabled: (enabled: boolean) => void;
     sleepTimerHours: number;
@@ -377,6 +452,38 @@ export type CommandPaletteSettingsContext = {
      * model" for the rest of the session.
      */
     canUseTransitionPerformance: () => boolean;
+    /**
+     * Whether this desktop build has the HiFi engine (window.electron.hifi). A getter like the
+     * other capability checks; the HiFi settings page gates its switch on the same answer.
+     */
+    isHifiSupported: () => boolean;
+    /** The HiFi switch as stored, read at the press. */
+    isHifiEnabled: () => boolean;
+    /**
+     * Whether the "output is at full volume" warning was accepted once. Until it is, turning HiFi
+     * on goes through the settings page, where the warning is asked.
+     */
+    isHifiVolumeConfirmed: () => boolean;
+    setHifiEnabled: (enabled: boolean) => void;
+    /** The three HiFi switches without a warning of their own, flipped from what is stored at the press. */
+    toggleHifiExclusive: () => void;
+    toggleHifiNavidrome: () => void;
+    toggleHifiSoftwareVolume: () => void;
+    /**
+     * Whether "Detect mpv again" is offered: the engine exists and no mpv download is running, the
+     * same answer the HiFi page enables its button by. A getter: a download starts and ends without
+     * rebuilding this context.
+     */
+    canRedetectHifiRuntime: () => boolean;
+    /** Looks for mpv again; null when the main process did not answer. */
+    redetectHifiRuntime: () => Promise<HifiRuntimeStatus | null>;
+    /**
+     * Whether the download (or update) of mpv is offered: the HiFi page's own test (runtimeState.ts),
+     * which is false on Linux, while a download runs, and when the newest build is installed.
+     */
+    canInstallHifiRuntime: () => boolean;
+    /** Downloads and installs the recommended mpv; resolves once it is done, failed or cancelled. */
+    installHifiRuntime: () => Promise<HifiInstallResult | null>;
 };
 
 /**
@@ -397,12 +504,18 @@ export type CommandPaletteVisualizerContext = {
     /** Null means "no stored choice"; the picker resolves it against the registry default. */
     visualizerBackgroundMode: VisualizerBackgroundMode | null;
     setVisualizerMode: (mode: VisualizerMode) => void;
+    /** The visualizer picker stays open after a mode is chosen. */
+    visualizerPickerKeepOpen: boolean;
+    setVisualizerPickerKeepOpen: (enable: boolean) => void;
     toggleRandomVisualizerModePerSong: () => void;
     /** Lab > Fix lyric animation freeze on Linux: the Linux renderer fd leak workaround. */
     toggleGlowBlurQuantize: () => void;
     setVisualizerBackgroundMode: (mode: VisualizerBackgroundMode) => void;
     setMonetBackgroundTuning: (patch: Partial<MonetBackgroundTuning>) => void;
     setLatentBackgroundTuning: (patch: Partial<LatentBackgroundTuning>) => void;
+    /** 雾笺: the next window scene (the front glass changes to that scene's usual pair, as in its settings) and the next front glass; each returns what it switched to. */
+    cycleNebbiaBehind: () => NebbiaBehind;
+    cycleNebbiaGlass: () => NebbiaGlass;
     /** The built-in video layer behind the lyrics. */
     toggleVideoLayer: () => void;
     /** 智能动感模式 (the beat FX in every mode and background that draws them): off, stored results only, or on. */

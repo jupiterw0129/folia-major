@@ -4,6 +4,7 @@ import type { MotionValue } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { getCacheUsageByCategory, clearCacheByCategory } from '../../services/db';
 import { forgetSettledDrumHits } from '../../services/analysis/drumHits';
+import { clearBalanceRuntime } from '../../services/volumeBalance/balanceRecords';
 import { DualTheme, StageStatus, StageSource, Theme, ThemeMode, type NowPlayingConnectionStatus, type ReplayGainMode } from '../../types';
 import { getNavidromeConfig, saveNavidromeConfig, clearNavidromeConfig, hashPassword, navidromeApi, setNavidromeEnabled, getCachedNavidromeServerProfile, refreshNavidromeServerProfile, getNavidromeConfigOrigin, dismissNavidromeServerPreset } from '../../services/navidromeService';
 import { fetchNavidromeServerPreset, markNavidromeConfigAsPresetIfMatching, restoreNavidromeServerPreset } from '../../services/navidromeServerPreset';
@@ -11,6 +12,7 @@ import { NavidromeConfig, NavidromeServerProfile } from '../../types/navidrome';
 import VisPlayground from '../visualizer/window/VisPlayground';
 import { useVisualizerTunings } from '../visualizer/useVisualizerTunings';
 import ThemePark from './ThemePark';
+import SceneWindow from '../scenes/settings/SceneWindow';
 import LyricFilterSettingsModal from './LyricFilterSettingsModal';
 import type { LyricFilterDraft } from './LyricFilterSettingsModal';
 import GlobalLyricOffsetModal from './settings/GlobalLyricOffsetModal';
@@ -30,6 +32,7 @@ import { type SettingsModalState, type SettingsSubviewId, type VisualizerSetting
 import { SettingsAnchorProvider, useSettingsAnchorList, useSettingsAnchorStore } from './settings/navigation/SettingsAnchorContext';
 import SettingsSearchResults from './settings/navigation/SettingsSearchResults';
 import SettingsSideList from './settings/navigation/SettingsSideList';
+import SettingsCompactNav from './settings/navigation/SettingsCompactNav';
 import { settingsAnchorSubview } from './settings/navigation/settingsAnchorModel';
 import { buildSettingsNavGroups, findSettingsNavItem, type SettingsSectionId } from './settings/navigation/settingsNavModel';
 import { buildSettingsSearchEntries, searchSettings, type SettingsSearchEntry } from './settings/navigation/settingsNavSearch';
@@ -197,6 +200,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         hidePlayerTranslationSubtitle,
         showSubtitleTranslation,
         subtitleContentMode,
+        subtitleOverlayLayout,
         subtitleOverlayOpacity,
         subtitleOverlayBackground,
         subtitleUpcomingLyricsBlur,
@@ -215,6 +219,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         handleToggleHidePlayerTranslationSubtitle: onToggleHidePlayerTranslationSubtitle,
         handleToggleShowSubtitleTranslation: onToggleShowSubtitleTranslation,
         handleSetSubtitleContentMode: onSubtitleContentModeChange,
+        handleSetSubtitleOverlayLayout: onSubtitleOverlayLayoutChange,
         handleSetSubtitleOverlayOpacity: setSubtitleOverlayOpacity,
         handleToggleSubtitleOverlayBackground: onToggleSubtitleOverlayBackground,
         handleToggleSubtitleUpcomingLyricsBlur: onToggleSubtitleUpcomingLyricsBlur,
@@ -234,8 +239,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         handleSetSubtitleFontFallbackFamilies: onSubtitleFontFallbackFamiliesChange,
     } = useTypographySettingsStore(useShallow(selectTypographySettingsSnapshot));
     const {
-        lyricFilterPattern,
-        lyricFilterEnabled,
+        lyricLineRules,
         lyricStaffPolicy,
         lyricStaffMinDwellSeconds,
         lyricStaffAbsorbMode,
@@ -317,13 +321,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         }
     };
     const contentScrollRef = useRef<HTMLDivElement>(null);
-    // Matches the md: split of the window: under it the side list is a strip that scrolls sideways.
+    // Matches the md: split of the window: under it the categories go into the drawer the menu
+    // button opens, and only that bar (menu button + search) stays on top.
     const isWideSettingsLayout = useMediaQuery('(min-width: 768px)');
     const settingsAnchorStore = useSettingsAnchorStore();
     const settingsAnchors = useSettingsAnchorList(settingsAnchorStore);
 
     const [showVisPlayground, setShowVisPlayground] = useState(false);
     const [showThemePark, setShowThemePark] = useState(false);
+    const [showSceneWindow, setShowSceneWindow] = useState(false);
     const [showLyricFilterSettings, setShowLyricFilterSettings] = useState(false);
     const [showGlobalLyricOffset, setShowGlobalLyricOffset] = useState(false);
     const [showAiHelpPrompt, setShowAiHelpPrompt] = useState(false);
@@ -336,6 +342,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setActiveTab(initialTab);
         setShowVisPlayground(initialSubview === 'visualizer');
         setShowThemePark(initialSubview === 'themePark');
+        setShowSceneWindow(initialSubview === 'scene');
         setShowLyricFilterSettings(initialSubview === 'lyricFilter');
         setShowGlobalLyricOffset(initialSubview === 'globalLyricOffset');
 
@@ -350,7 +357,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         } else {
             setActiveSettingsSection(prev => prev || 'appearance');
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [initialSubview, initialTab]);
 
     // A request for one place in the settings: show the page settingsAnchorModel puts it on, then
@@ -367,7 +373,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setSearchQuery('');
         // A request may name one row of the section; the section is where it lands while that row is not drawn.
         landOn(initialAnchor.rowId ?? initialAnchor.id, initialAnchor.id);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [initialAnchor]);
 
     // Cache State
@@ -376,7 +381,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         lyrics: '0 B',
         cover: '0 B',
         media: '0 B',
-        analysis: '0 B'
+        analysis: '0 B',
+        volumeBalance: '0 B'
     });
     const [mediaCount, setMediaCount] = useState(0);
     const [isCleaning, setIsCleaning] = useState<CacheCategory | null>(null);
@@ -386,6 +392,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const [isElectron, setIsElectron] = useState(hasElectronBridge);
     const [electronSettings, setElectronSettings] = useState({
         GEMINI_API_KEY: '',
+        // Blank: the default model, worked out when the request is made (nothing is written back).
+        GEMINI_API_MODEL: '',
+        AI_PROVIDER_PRESET: '',
         OPENAI_API_KEY: '',
         OPENAI_API_URL: '',
         OPENAI_API_MODEL: '',
@@ -551,6 +560,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             await (window as any).electron.saveSettings('OPENAI_API_MODEL', electronSettings.OPENAI_API_MODEL);
             await (window as any).electron.saveSettings('OPENAI_API_TEMPERATURE', temperature);
             await (window as any).electron.saveSettings('OPENAI_API_STREAM', electronSettings.OPENAI_API_STREAM === true);
+            await (window as any).electron.saveSettings('GEMINI_API_MODEL', electronSettings.GEMINI_API_MODEL);
+            await (window as any).electron.saveSettings('AI_PROVIDER_PRESET', electronSettings.AI_PROVIDER_PRESET);
             await (window as any).electron.saveSettings('AI_PROVIDER', electronSettings.AI_PROVIDER);
             await (window as any).electron.saveSettings('USE_SYSTEM_PROXY_FOR_AI', electronSettings.USE_SYSTEM_PROXY_FOR_AI);
             await (window as any).electron.saveSettings('ENABLE_UPDATE_CHECK', electronSettings.ENABLE_UPDATE_CHECK);
@@ -812,7 +823,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             lyrics: formatBytes(usage.lyrics),
             cover: formatBytes(usage.cover),
             media: formatBytes(usage.media),
-            analysis: formatBytes(usage.analysis)
+            analysis: formatBytes(usage.analysis),
+            volumeBalance: formatBytes(usage.volumeBalance)
         });
         setMediaCount(usage.mediaCount);
     };
@@ -830,6 +842,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
     const handleClear = async (category: CacheCategory) => {
         setIsCleaning(category);
+        // 智能平衡's readings held in memory go with its stored ones, or they would be written back. First, so
+        // a write already sent lands before the clear and none is sent after it.
+        if (category === 'volumeBalance') clearBalanceRuntime();
         await clearCacheByCategory(category);
         // The drum hits' memory of which tracks are stored goes with the stored analyses.
         if (category === 'analysis') forgetSettledDrumHits();
@@ -892,6 +907,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     };
     const isAnySubviewOpen = showVisPlayground
         || showThemePark
+        || showSceneWindow
         || showLyricFilterSettings
         || showGlobalLyricOffset
         || showAiHelpPrompt
@@ -901,7 +917,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     // open sheet takes the key on the document and stops it (shared/Sheet.tsx). A menu or a pick
     // list that is open takes the key before this window hears it as well. The two work windows
     // leave Escape to their owner, so they are what it can find open here.
-    const isWorkWindowOpen = showVisPlayground || showThemePark;
+    const isWorkWindowOpen = showVisPlayground || showThemePark || showSceneWindow;
 
     const closeWorkWindows = () => {
         if (shouldCloseModalOnSubviewBack) {
@@ -910,6 +926,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         }
         setShowVisPlayground(false);
         setShowThemePark(false);
+        setShowSceneWindow(false);
     };
 
     useEffect(() => {
@@ -1038,6 +1055,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         },
         onOpenVisPlayground: () => setShowVisPlayground(true),
         onOpenThemePark: () => setShowThemePark(true),
+        onOpenSceneWindow: () => setShowSceneWindow(true),
         onToggleTransparentPlayerBackground: resolvedToggleTransparentPlayerBackground,
         viewProps: {
             appearance: {
@@ -1179,18 +1197,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 onClick={(event) => event.stopPropagation()}
             >
                 <SettingsKitThemeContext.Provider value={kitTheme}>
-                    <SettingsSideList
-                        groups={settingsNavGroups}
-                        activeId={isSearching ? null : activeTab === 'help' ? 'help' : activeSettingsSection}
-                        onSelectSection={handleSelectSettingsSection}
-                        onSelectHelp={handleSelectHelp}
-                        query={searchQuery}
-                        onQueryChange={handleSearchQueryChange}
-                        onSubmitQuery={() => {
-                            if (searchHits.length > 0) handleSelectSearchHit(searchHits[0]);
-                        }}
-                        isWide={isWideSettingsLayout}
-                    />
+                    {/* 宽屏：左侧栏（搜索框 + 分类）常在。紧凑档：顶上只有菜单按钮和搜索框，
+                        分类收进菜单按钮打开的抽屉里——抽屉就是同一个侧栏，不带搜索框。 */}
+                    {isWideSettingsLayout ? (
+                        <SettingsSideList
+                            groups={settingsNavGroups}
+                            activeId={isSearching ? null : activeTab === 'help' ? 'help' : activeSettingsSection}
+                            onSelectSection={handleSelectSettingsSection}
+                            onSelectHelp={handleSelectHelp}
+                            query={searchQuery}
+                            onQueryChange={handleSearchQueryChange}
+                            onSubmitQuery={() => {
+                                if (searchHits.length > 0) handleSelectSearchHit(searchHits[0]);
+                            }}
+                        />
+                    ) : (
+                        <SettingsCompactNav
+                            groups={settingsNavGroups}
+                            activeId={isSearching ? null : activeTab === 'help' ? 'help' : activeSettingsSection}
+                            onSelectSection={handleSelectSettingsSection}
+                            onSelectHelp={handleSelectHelp}
+                            query={searchQuery}
+                            onQueryChange={handleSearchQueryChange}
+                            onSubmitQuery={() => {
+                                if (searchHits.length > 0) handleSelectSearchHit(searchHits[0]);
+                            }}
+                            isDaylight={isDaylight}
+                            onClose={onClose}
+                            closeLabel={t('ui.close')}
+                        />
+                    )}
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                         <PageHeader
                             title={isSearching
@@ -1204,6 +1240,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                 : undefined}
                             closeLabel={t('ui.close')}
                             onClose={onClose}
+                            showClose={isWideSettingsLayout}
                         />
                         <div
                             ref={contentScrollRef}
@@ -1304,6 +1341,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         hideTranslationSubtitle={hidePlayerTranslationSubtitle}
                         showSubtitleTranslation={showSubtitleTranslation}
                         subtitleContentMode={subtitleContentMode}
+                        subtitleOverlayLayout={subtitleOverlayLayout}
                         subtitleOverlayOpacity={subtitleOverlayOpacity}
                         subtitleOverlayBackground={subtitleOverlayBackground}
                         subtitleUpcomingLyricsBlur={subtitleUpcomingLyricsBlur}
@@ -1338,6 +1376,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         onToggleHideTranslationSubtitle={onToggleHidePlayerTranslationSubtitle}
                         onToggleShowSubtitleTranslation={onToggleShowSubtitleTranslation}
                         onSubtitleContentModeChange={onSubtitleContentModeChange}
+                        onSubtitleOverlayLayoutChange={onSubtitleOverlayLayoutChange}
                         onSubtitleOverlayOpacityChange={setSubtitleOverlayOpacity}
                         onToggleSubtitleOverlayBackground={onToggleSubtitleOverlayBackground}
                         onToggleSubtitleUpcomingLyricsBlur={onToggleSubtitleUpcomingLyricsBlur}
@@ -1376,6 +1415,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         monetPortraitImage={monetPortraitImage}
                         showSubtitleTranslation={showSubtitleTranslation}
                         subtitleContentMode={subtitleContentMode}
+                        subtitleOverlayLayout={subtitleOverlayLayout}
                         lyricsFontStyle={lyricsFontStyle}
                         lyricsFontScale={lyricsFontScale}
                         lyricsFontWeight={lyricsFontWeight}
@@ -1392,13 +1432,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     />
                 )}
             </AnimatePresence>
+            <AnimatePresence>
+                {showSceneWindow && (
+                    <SceneWindow
+                        isDaylight={isDaylight}
+                        theme={theme}
+                        onClose={() => closeSubviewOrModal(() => setShowSceneWindow(false))}
+                    />
+                )}
+            </AnimatePresence>
 
             <LyricFilterSettingsModal
                 isOpen={showLyricFilterSettings}
                 isDaylight={isDaylight}
                 currentSongTitle={currentSongTitle}
-                initialPattern={lyricFilterPattern}
-                initialFilterEnabled={lyricFilterEnabled}
+                initialRules={lyricLineRules}
                 initialStaffPolicy={lyricStaffPolicy}
                 initialStaffMinDwellSeconds={lyricStaffMinDwellSeconds}
                 initialStaffAbsorbMode={lyricStaffAbsorbMode}

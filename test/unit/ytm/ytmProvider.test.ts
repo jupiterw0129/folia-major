@@ -3,8 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // test/unit/ytm/ytmProvider.test.ts
 
 const request = vi.hoisted(() => vi.fn());
+const loadSnapshot = vi.hoisted(() => vi.fn());
 vi.mock('@/services/onlineMusic/ytm/ytmTransport', () => ({
     requestYtm: request, getYtmTransportAvailability: () => ({ configured: true }),
+}));
+vi.mock('@/services/onlineMusic/providerAccountCache', () => ({
+    loadProviderAccountSnapshot: loadSnapshot,
 }));
 import { ytmProvider } from '@/services/onlineMusic/ytm/ytmProvider';
 import { noteYtmAccount, ytmHasPremium } from '@/services/onlineMusic/ytm/ytmAccount';
@@ -28,6 +32,7 @@ const ids = (count: number, from = 0) => Array.from({ length: count }, (_, index
 
 beforeEach(() => {
     request.mockReset();
+    loadSnapshot.mockReset().mockResolvedValue(null);
     clearYtmCatalogCache();
     clearYtmLibraryCache();
     noteYtmAccount(null);
@@ -628,6 +633,35 @@ describe('YouTube Music provider', () => {
         expect(request.mock.calls).toEqual([['search_songs', { query: 'yoasobi' }], ['search_songs', { continuation: 'next-token' }]]);
     });
 
+    // A mod reading through `folium.omni` names its session: its searches neither start the
+    // listener's search over nor push it out, however many it makes.
+    it('walks a session\'s searches apart from the host\'s own, in a pager of their own', async () => {
+        // Each page holds one song and the token of the next page.
+        request.mockImplementation(async (operation: string, params: { query?: string; continuation?: string }) => {
+            if (operation !== 'search_songs') throw new Error(`unexpected ${operation}`);
+            const [text, page] = params.query !== undefined
+                ? [params.query, 0]
+                : [params.continuation!.split('#')[0], Number(params.continuation!.split('#')[1])];
+            return { items: [wireSong(`${text}-${page}`)], continuation: `${text}#${page + 1}` };
+        });
+        const search = ytmProvider.search!.searchSongs;
+        const mod = { session: 'folium:mod-a' };
+        const first = await search('tides', 1, 0);
+        // The mod reads the same search from its first page, then its second.
+        expect((await search('tides', 1, 0, mod)).items.map(song => song.id)).toEqual(['tides-0']);
+        expect((await search('tides', 1, 1, mod)).items.map(song => song.id)).toEqual(['tides-1']);
+        // The listener's search goes on with its own token: not begun anew by the mod's first page.
+        request.mockClear();
+        const second = await search('tides', 1, first.nextOffset);
+        expect(second.items.map(song => song.id)).toEqual(['tides-1']);
+        expect(request.mock.calls).toEqual([['search_songs', { continuation: 'tides#1' }]]);
+        // Sessions begin many more searches than the pager holds; only theirs make room.
+        for (let lookup = 0; lookup < 30; lookup += 1) await search(`lookup ${lookup}`, 1, 0, { session: `folium:mod-${lookup % 3}` });
+        request.mockClear();
+        expect((await search('tides', 1, second.nextOffset)).items.map(song => song.id)).toEqual(['tides-2']);
+        expect(request.mock.calls).toEqual([['search_songs', { continuation: 'tides#2' }]]);
+    });
+
     it('says in the log whether a track came with lyrics of its own', async () => {
         const log = vi.spyOn(console, 'log').mockImplementation(() => {});
         request.mockResolvedValueOnce(null).mockResolvedValueOnce({ mainText: '[00:01.00]line one\n[00:02.00]line two' });
@@ -654,6 +688,18 @@ describe('YouTube Music provider', () => {
         const foreign = { ...song, sourceRef: { kind: 'online' as const, providerId: 'netease', mediaId: '1' } };
         await expect(ytmProvider.playback!.getAudioSource(foreign, 'high')).rejects.toMatchObject({ code: 'unsupported' });
         await expect(ytmProvider.lyrics!.getLyrics(foreign)).rejects.toMatchObject({ code: 'unsupported' });
+    });
+
+    it('takes YouTube\'s loudness figure as the track gain: a track louder than its level is turned down, a quieter one not lifted', async () => {
+        request.mockResolvedValueOnce({ url: 'folia-ytm://audio/m9SMT5ipbxk?k=one', route: 'web', loudnessDb: 4.5 })
+            .mockResolvedValueOnce({ url: 'folia-ytm://audio/m9SMT5ipbxk?k=quiet', route: 'web', loudnessDb: -6 })
+            .mockResolvedValueOnce({ url: 'folia-ytm://audio/m9SMT5ipbxk?k=two', route: 'web' });
+        vi.spyOn(console, 'log').mockImplementation(() => {});
+        const song = normalizeYtmSong(wireSong());
+        expect(await ytmProvider.playback!.getAudioSource(song, 'high')).toMatchObject({ replayGain: { trackGain: -4.5 } });
+        expect(await ytmProvider.playback!.getAudioSource(song, 'high')).toMatchObject({ replayGain: { trackGain: 0 } });
+        expect(await ytmProvider.playback!.getAudioSource(song, 'high')).not.toHaveProperty('replayGain');
+        vi.mocked(console.log).mockRestore();
     });
 
     it('reads its line-timed lyrics, and answers "none" when there are none or the request fails', async () => {
@@ -755,7 +801,7 @@ describe('YouTube Music provider', () => {
         expect(auth.describeLoginFailure!('start', failure)).toMatchObject({ case: 'no-browser' });
         expect(auth.getLoginTexts!().caseNotes?.['no-browser']).toBe('home.loginNoBrowserYtm');
         for (const language of ['zh-CN', 'en', 'in']) {
-            expect(i18n.getFixedT(language)('home.loginNoBrowserYtm')).toMatch(/YouTube Music.+Chrome.+Edge.+Chromium.+Brave/);
+            expect(i18n.getFixedT(language)('home.loginNoBrowserYtm')).toMatch(/YouTube Music.+Chrome.+Beta.+Dev.+Canary.+Edge.+Chromium.+Brave.+Helium/);
         }
     });
 
@@ -1035,5 +1081,19 @@ describe('YouTube Music catalog and library', () => {
         expect(request.mock.calls).toEqual([
             ['user_playlists', { continuation: undefined }], ['user_albums', { continuation: undefined }], ['user_playlists', { continuation: 'lists-2' }],
         ]);
+    });
+
+    it('keeps confirmed ownership on an inconclusive refresh for the same account only', async () => {
+        const playlist = (id: string, isOwned?: boolean) => ({ id, type: 'playlist', name: id, coverUrl: '', isOwned });
+        loadSnapshot.mockResolvedValue({
+            user: { id: 'owner' }, collections: [playlist('PLunknown', true), playlist('PLnotOwned', true)],
+        });
+        request.mockResolvedValue({ items: [playlist('PLunknown'), playlist('PLnotOwned', false)] });
+
+        const library = ytmProvider.library!;
+        const own = await library.getUserPlaylists('owner', 50, 0);
+        expect(own.items.map(item => item.isOwned)).toEqual([true, false]);
+        const other = await library.getUserPlaylists('other', 50, 0);
+        expect(other.items.map(item => item.isOwned)).toEqual([undefined, false]);
     });
 });
